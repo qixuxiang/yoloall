@@ -1,0 +1,9 @@
+__pycache__/
+run/*
+*.weights
+*.pt
+*.pth
+*.cache
+val_data.txt
+*.caffemodel
+*.prototxt
