@@ -8,6 +8,8 @@ YOLOALL-PyTorch是一阶段YOLO系列算法的目标检测开发套件的集合�
 
 - 2021/11/04完成yolov3、yolov4、yolov5代码的集成，代码未进行优化。
 
+- 2021/12/02完成yolo-mmdet版本的代码集成(增加了梯度裁剪功能)
+
   
 
 ### **支持Backone类型**：
