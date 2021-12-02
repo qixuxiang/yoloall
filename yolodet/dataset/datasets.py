@@ -4,6 +4,7 @@ import glob
 import logging
 import math
 import os
+import copy
 import random
 import shutil
 import time
@@ -18,10 +19,11 @@ import torch
 from PIL import Image, ExifTags
 from torch.utils.data import Dataset
 from tqdm import tqdm
-
+import pdb
 from yolodet.utils.general import xyxy2xywh, xywh2xyxy, clean_str
 from yolodet.utils.torch_utils import torch_distributed_zero_first
 from pycocotools.coco import COCO
+
 # Parameters
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
 img_formats = ['bmp', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'dng']  # acceptable image suffixes
@@ -54,24 +56,29 @@ def exif_size(img):
     return s
 
 
-def create_dataloader(path, imgsz, batch_size, stride, cls_map, single_cls, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
-                      rank=-1, world_size=1, workers=8, image_weights=False):
+# def create_dataloader(path, imgsz, batch_size, stride, cls_map, single_cls, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
+#                       rank=-1, world_size=1, workers=8, image_weights=False,version='v5'):
+def create_dataloader(path, imgsz, batch_size, stride, opt, augment=False, rank=-1, pad=0.0, rect=False):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
         dataset = LoadImagesAndLabels(path, imgsz, batch_size,
                                       augment=augment,  # augment images
-                                      hyp=hyp,  # augmentation hyperparameters
-                                      rect=rect,  # rectangular training
-                                      cache_images=cache,
-                                      cls_map = cls_map,
-                                      single_cls=single_cls,
+                                      hyp=opt.hyp,  # augmentation hyperparameters
+                                      rect=opt.train_cfg['rect'],  # rectangular training
+                                      cache_images=opt.train_cfg['cache_images'],
+                                      cls_map = opt.data['cls_map'],
+                                      single_cls=opt.train_cfg['single_cls'],
                                       stride=int(stride),
                                       pad=pad,
                                       rank=rank,
-                                      image_weights=image_weights)
+                                      image_weights=opt.train_cfg['image_weights'],
+                                      version=opt.train_cfg['version'],
+                                      debug = opt.train_cfg['debug'])                                      
 
+    workers=opt.train_cfg['workers']
+    image_weights=opt.train_cfg['image_weights']
     batch_size = min(batch_size, len(dataset))
-    nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
+    nw = min([os.cpu_count() // opt.world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
     sampler = torch.utils.data.distributed.DistributedSampler(dataset) if rank != -1 else None
     loader = torch.utils.data.DataLoader if image_weights else InfiniteDataLoader
     # Use torch.utils.data.DataLoader() if dataset.properties will update during training else InfiniteDataLoader()
@@ -336,7 +343,7 @@ def img2label_paths(img_paths):
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
-                 cache_images=False, cls_map = None, single_cls=False, stride=32, pad=0.0, rank=-1):
+                 cache_images=False, cls_map = None, single_cls=False, stride=32, pad=0.0, rank=-1,version="v5",debug=False):
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
@@ -346,6 +353,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.mosaic_border = [-img_size // 2, -img_size // 2]
         self.stride = stride
         self.cls_maps = {}
+        self.version = version
+        self.debug = debug
+        # if self.debug:
+            
         for keys,values in cls_map.items():
             for i in values:
                 self.cls_maps[i] = keys
@@ -608,6 +619,30 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 if nL:
                     labels[:, 1] = 1 - labels[:, 1]
 
+        if nL and self.version == 'mmdet':
+            labels[:, [2, 4]] *= img.shape[0]  # normalized height 0-1
+            labels[:, [1, 3]] *= img.shape[1]  # normalized width 0-1
+            labels[:, 1:5] = xywh2xyxy(labels[:, 1:5])
+            
+        if self.debug :#and rank == 0
+            #pdb.set_trace()
+            cv2.namedWindow('Debug',cv2.WINDOW_AUTOSIZE)
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            debug_img = copy.deepcopy(img)
+            for target_num in range(len(labels)):
+                if self.version == 'mmdet':
+                    right_point = (int(labels[target_num,1]),int(labels[target_num,2]))
+                    left_point = (int(labels[target_num,3]),int(labels[target_num,4]))
+                else:
+                    right_point = (int((labels[target_num,1] - labels[target_num,3]/2)*img.shape[1]),int((labels[target_num,2] - labels[target_num,4]/2)*img.shape[0]))
+                    left_point = (int((labels[target_num,1] + labels[target_num,3]/2)*img.shape[1]),int((labels[target_num,2] + labels[target_num,4]/2)*img.shape[0]))
+                cv2.rectangle(debug_img,right_point,left_point,(255,0,0),3)
+                cv2.putText(debug_img,str(int(labels[target_num,0])),right_point,font, 1.2, (255, 0, 0), 2)
+            cv2.imshow('Debug',debug_img)
+            k = cv2.waitKey(0)
+            if k == ord('q'):
+                cv2.destroyAllWindows()
+                
         labels_out = torch.zeros((nL, 6))
         if nL:
             labels_out[:, 1:] = torch.from_numpy(labels)

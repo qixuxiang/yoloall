@@ -23,8 +23,8 @@ def test(data,
          weights=None,
          batch_size=32,
          imgsz=640,
-         conf_thres=0.001,
-         iou_thres=0.6,  # for NMS
+         conf_thres=0.1,
+         iou_thres=0.3,  # for NMS
          save_json=False,
          single_cls=False,
          augment=False,
@@ -40,6 +40,7 @@ def test(data,
          log_imgs=0):  # number of logged images
 
     # Initialize/load model and set device
+    print("conf_thres:",conf_thres,"iou_thres:",iou_thres)
     training = model is not None
     if training:  # called by train.py
         device = next(model.parameters()).device  # get model device
@@ -72,6 +73,7 @@ def test(data,
     #     data = yaml.load(f, Loader=yaml.FullLoader)  # model dict
     # check_dataset(data)  # check
     is_coco = data['data_type']
+    version = data['version']
     nc = 1 if single_cls else int(data['nc'])  # number of classes
     iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     niou = iouv.numel()
@@ -111,12 +113,15 @@ def test(data,
             inf_out, train_out = model(img, augment=augment)  # inference and training outputs
             t0 += time_synchronized() - t
 
-            # Compute loss
-            if training:
-                loss += compute_loss([x.float() for x in train_out], targets)[1][:3]  # box, obj, cls
+            # Compute loss 没有用
+            # if training:
+            #     loss += compute_loss([x.float() for x in train_out], targets)[1][:3]  # box, obj, cls
 
             # Run NMS
-            targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
+            if version == 'mmdet':
+                targets = torch.cat((targets[:,:2],xyxy2xywh(targets[:,2:])),1).to(device)
+            else:
+                targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             t = time_synchronized()
             output = non_max_suppression(inf_out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb)

@@ -9,6 +9,7 @@ from yolodet.loss.yolov5_loss import compute_loss_v5
 from yolodet.loss.yolo3_loss import compute_loss_v3
 from yolodet.loss.darknet_loss import compute_loss_darknet
 # from yolodet.loss.yolov4_loss import build_targets_v4
+from yolodet.loss.mmdet_loss import YOLOV3Head
 
 
 class ComputeLoss:
@@ -16,40 +17,55 @@ class ComputeLoss:
     def __init__(self, model, autobalance=False):
         super(ComputeLoss, self).__init__()
         device = next(model.parameters()).device  # get model device
-        h = model.hyp  # hyperparameters
-        # Define criteria
-        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
-        BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
-        # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
-        self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))  # positive, negative BCE targets
-
-        # Focal loss
-        g = h['fl_gamma']  # focal loss gamma
-        if g > 0:
-            BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
-        self.BCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = BCEcls, BCEobj, model.gr, h, autobalance
+        self.hyp = model.hyp  # hyperparameters
         self.version = model.version
         self.model = model
+        self.add = False
+        self.stride = [8,16,32]
 
-        if self.version == 'darknet':
-            pass
-        else:
-            det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
+        det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
+
+        self.nc = det.nc
+        self.na = det.na
+        self.anchors = det.anchors
+        self.nl = det.nl
+
+        if self.version in ['v3','v5']:
+
+            # Define criteria
+            BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([self.hyp['cls_pw']], device=device))
+            BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([self.hyp['obj_pw']], device=device))
+            # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
+            self.cp, self.cn = smooth_BCE(eps=self.hyp.get('label_smoothing', 0.0))  # positive, negative BCE targets
+
+            # Focal loss
+            g = self.hyp['fl_gamma']  # focal loss gamma
+            if g > 0:
+                BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
+            self.BCEcls, self.BCEobj, self.gr, self.autobalance = BCEcls, BCEobj, model.gr, autobalance
             self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
             self.ssi = list(det.stride).index(16) if autobalance else 0  # stride 16 index
-            for k in 'na', 'nc', 'nl', 'anchors':
-                setattr(self, k, getattr(det, k))
+            # for k in 'na', 'nc', 'nl', 'anchors':
+            #     setattr(self, k, getattr(det, k))
 
-        # if self.version != 'v4':
-        #     # Losses
-        #     nt = 0  # number of targets
-        #     no = len(p)  # number of outputs
-        #     balance = [4.0, 1.0, 0.4] if no == 3 else [4.0, 1.0, 0.4, 0.1]  # P3-5 or P3-6
-        #     balance = [4.0, 1.0, 0.5, 0.4, 0.1] if no == 5 else balance
-    
+        elif self.version == 'mmdet':
+            self.head_loss = YOLOV3Head(
+                num_classes = self.nc,
+                anchor_generator = [[(10, 13), (16, 30), (33, 23)],
+                                    [(30, 61), (62, 45), (59, 119)],
+                                    [(116, 90), (156, 198), (373, 326)]],
+                # [[(116, 90), (156, 198), (373, 326)],
+                #                  [(30, 61), (62, 45), (59, 119)],
+                #                  [(10, 13), (16, 30), (33, 23)]],#self.anchors,
+                featmap_strides = self.stride,
+                add = self.add,
+            )
+        else:
+            print('not sport')
+            raise "error"
 
 
-    def __call__(self, p, targets):  # predictions, targets, model
+    def __call__(self, p, targets, img_metas=None):  # predictions, targets, model
 
         if self.version == 'v5':
             return compute_loss_v5(self,p,targets)
@@ -57,6 +73,8 @@ class ComputeLoss:
             return compute_loss_v3(self,p,targets)
         elif self.version == 'darknet':
             return compute_loss_darknet(self,p,targets)
+        elif self.version == 'mmdet':
+            return self.head_loss.compute_loss_mmdet(p,targets[0],targets[1],img_metas)#gt_bboxes,gt_labels,
         else:
             print('erro!')
 

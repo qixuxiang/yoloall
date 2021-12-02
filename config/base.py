@@ -3,12 +3,12 @@ import torch
 gpu_num = torch.cuda.device_count()
 train_cfg = {
     "data"          :"data_demo",
-    "version"       :"darknet",
-    "cfg"           :"/home/yu/workspace/yoloall/yolov5/yolodet/models/cfg_model/yolov4-tiny.cfg",#
+    "version"       :"mmdet",
+    "cfg"           :"yolov5s.yaml",#
     "weights"       :"",
     "anchors"       :[[10,13, 16,30, 33,23],[30,61, 62,45, 59,119],[116,90, 156,198, 373,326]],
     "epochs"        :300,
-    "batch_size"    :2* gpu_num,
+    "batch_size"    :8* gpu_num,
     "hight"         :640,
     "width"         :640,
     "step"          :[8, 16, 32],
@@ -31,18 +31,23 @@ train_cfg = {
     "sync_bn"       :False,
     "log_imgs"      :16,
     "log_artifacts" :False,
-    "exist_ok"      :False,    
+    "exist_ok"      :False,
+    "max_norm"      :0,
+    "max_one_norm"  :35,
+
+    #Debug模式
+    "debug"         :0,  
 }
 
 hyp = {
-    'lr0': 0.01,  # initial learning rate (SGD=1E-2, Adam=1E-3)
+    'lr0': 0.001,  # initial learning rate (SGD=1E-2, Adam=1E-3)
     'lrf': 0.2,  # final OneCycleLR learning rate (lr0 * lrf)
-    'momentum': 0.937,  # SGD momentum/Adam beta1
+    'momentum': 0.9,  # SGD momentum/Adam beta1
     'weight_decay': 0.0005,  # optimizer weight decay 5e-4
-    'warmup_epochs': 3.0,  # warmup epochs (fractions ok)
-    'warmup_momentum': 0.8,  # warmup initial momentum
-    'warmup_bias_lr': 0.1,  # warmup initial bias lr
-    'box': 0.05,  # box loss gain
+    'warmup_epochs': 2.0,  # warmup epochs (fractions ok)
+    'warmup_momentum': 0.9,  # warmup initial momentum
+    'warmup_bias_lr': 0.0,  # warmup initial bias lr
+    'box': 0.01,  # box loss gain
     'cls': 0.5,  # cls loss gain
     'cls_pw': 1.0,  # cls BCELoss positive_weight
     'obj': 1.0,  # obj loss gain (scale with pixels)
@@ -51,7 +56,7 @@ hyp = {
     'anchor_t': 4.0,  # anchor-multiple threshold
     # 'anchors': 3,  # anchors per output layer (0 to ignore)
     'fl_gamma': 0.0,  # focal loss gamma (efficientDet default gamma=1.5)
-    'hsv_h': 0.015,  # image HSV-Hue augmentation (fraction)
+    'hsv_h': 0.1,  # image HSV-Hue augmentation (fraction)
     'hsv_s': 0.7,  # image HSV-Saturation augmentation (fraction)
     'hsv_v': 0.4,  # image HSV-Value augmentation (fraction)
     'degrees': 0.0,  # image rotation (+/- deg)
@@ -61,6 +66,6 @@ hyp = {
     'perspective': 0.0,  # image perspective (+/- fraction), range 0-0.001
     'flipud': 0.0,  # image flip up-down (probability)
     'fliplr': 0.5,  # image flip left-right (probability)
-    'mosaic': 1.0,  # image mosaic (probability)
+    'mosaic': 0.0,  # image mosaic (probability)
     'mixup': 0.0,  # image mixup (probability)
 }

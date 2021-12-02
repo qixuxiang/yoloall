@@ -1,8 +1,8 @@
 ######################################################
 data_demo = {
     'data_type':"COCO",
-    'train_path':'/home/yu/workspace/yoloall/yolov5/val_data.txt',
-    'val_path':'/home/yu/workspace/yoloall/yolov5/val_data.txt',
+    'train_path':'/home/yu/workspace/yoloall/yoloall/val_data.txt',
+    'val_path':'/home/yu/workspace/yoloall/yoloall/val_data.txt',
     'test_path':'',
     'nc': 80,
     'names':[  'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',

@@ -27,7 +27,7 @@ from yolodet.dataset.autoanchor import check_anchors
 from yolodet.dataset.datasets import create_dataloader
 from yolodet.utils.general import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \
     fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_git_status, check_img_size, \
-    print_mutation, set_logging
+    print_mutation, set_logging, xyxy2xywh
 from yolodet.utils.google_utils import attempt_download
 from yolodet.loss.loss_base import ComputeLoss
 from yolodet.utils.plots import plot_images, plot_labels, plot_results, plot_evolution
@@ -54,6 +54,12 @@ def train(opt, device, tb_writer=None, wandb=None):
     best = wdir / 'best.pt'
     results_file = save_dir / 'results.txt'
 
+    max_norm = opt.train_cfg.get('max_norm',0)
+    if max_norm == 0:
+        max_one_norm = opt.train_cfg.get('max_one_norm',0)
+        if max_one_norm > 0:
+            max_norm = max_one_norm * batch_size
+
     # Save run settings
     # with open(save_dir / 'hyp.yaml', 'w') as f:
     #     yaml.dump(opt.hyp, f, sort_keys=False)
@@ -70,10 +76,12 @@ def train(opt, device, tb_writer=None, wandb=None):
     #     check_dataset(data_dict)  # check
     train_path = opt.data['train_path']
     test_path = opt.data['val_path']
+    loss_version = opt.train_cfg['version']
+    opt.data['version'] = opt.train_cfg['version']
     nc = 1 if opt.train_cfg['single_cls'] else int(opt.data['nc'])  # number of classes
     names = ['item'] if opt.train_cfg['single_cls'] and len(opt.data['names']) != 1 else opt.data['names']  # class names
     assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data)  # check
-    if opt.train_cfg['version'] == 'darknet':
+    if loss_version == 'darknet':
         from yolodet.models.darknet_model import Darknet as Model
         logger.info('Loading model from yolodet.models.darknet_model import Darknet')
         model = Model(opt.train_cfg['cfg'],(opt.train_cfg['hight'],opt.train_cfg['width'])).to(device)
@@ -87,6 +95,9 @@ def train(opt, device, tb_writer=None, wandb=None):
             from yolodet.models.yolo_py import Model
             logger.info('Loading model from yolodet.models.yolo_py import Model')
             model = Model(opt.train_cfg, ch=3, nc=nc).to(device)  # create
+
+
+
     # else:
     #     logger.info('no model match error!')
     
@@ -200,10 +211,7 @@ def train(opt, device, tb_writer=None, wandb=None):
         model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank)
 
     # Trainloader
-    dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, cls_map = opt.data['cls_map'],single_cls=opt.train_cfg['single_cls'],
-                                            hyp=opt.hyp,augment=True, cache=opt.train_cfg['cache_images'], rect=opt.train_cfg['rect'], rank=rank,
-                                            world_size=opt.world_size, workers=opt.train_cfg['workers'],
-                                            image_weights=opt.train_cfg['image_weights'])
+    dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt, augment=True, rank=rank)
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
@@ -211,9 +219,9 @@ def train(opt, device, tb_writer=None, wandb=None):
     # Process 0
     if rank in [-1, 0]:
         ema.updates = start_epoch * nb // accumulate  # set EMA updates
-        testloader = create_dataloader(test_path, imgsz_test, batch_size, gs, cls_map = opt.data['cls_map'],single_cls=opt.train_cfg['single_cls'],  # testloader
-                                       hyp=opt.hyp, cache=opt.train_cfg['cache_images'] and not opt.train_cfg['notest'], rect=opt.train_cfg['rect'],#True
-                                       rank=-1, world_size=opt.world_size, workers=opt.train_cfg['workers'], pad=0.5)[0]
+        testloader = create_dataloader(test_path, imgsz_test, batch_size, gs, opt, rank=-1, pad=0.5)[0] 
+                                    #    hyp=opt.hyp, cache=opt.train_cfg['cache_images'] and not opt.train_cfg['notest'], rect=opt.train_cfg['rect'],#True
+                                    #    rank=-1, world_size=opt.world_size, workers=opt.train_cfg['workers'],pad=0.5,version=loss_version)[0]
 
         if not opt.train_cfg['resume']:
             labels = np.concatenate(dataset.labels, 0)
@@ -274,13 +282,26 @@ def train(opt, device, tb_writer=None, wandb=None):
         if rank != -1:
             dataloader.sampler.set_epoch(epoch)
         pbar = enumerate(dataloader)
-        logger.info(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'total', 'targets', 'img_size'))
-        if rank in [-1, 0]:
-            pbar = tqdm(pbar, total=nb)  # progress bar
+        logger.info(('\n' + '%10s' * 10) % ('Epoch','gpu_mem','batch', 'box', 'obj', 'cls', 'total', 'targets','lr', 'img_size'))
+        # if rank in [-1, 0]:
+        #     pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
+        item_num = 0
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
+            item_num += 1
             ni = i + nb * epoch  # number integrated batches (since train start)
-            imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
+            imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0\
+            
+            if model.version == 'mmdet':
+                gt_boxes = []
+                gt_labels = []
+                img_metas = []
+                for batchs in range(len(imgs)):
+                    gt_labels.append(targets[targets[:,0] == batchs][:,1].to(device))
+                    gt_boxes.append(targets[targets[:,0] == batchs][:,2:].to(device))
+                img_metas.extend(paths)
+            else:
+                targets = targets.to(device)
 
             # Warmup
             if ni <= nw:
@@ -304,12 +325,21 @@ def train(opt, device, tb_writer=None, wandb=None):
             # Forward
             with amp.autocast(enabled=cuda):
                 pred = model(imgs)  # forward
-                loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                if model.version == 'mmdet':
+                    loss, loss_items = compute_loss(pred, [gt_boxes,gt_labels], img_metas)
+                else:
+                    loss, loss_items = compute_loss(pred, targets)  # loss scaled by batch_size
                 if rank != -1:
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
 
             # Backward
             scaler.scale(loss).backward()
+
+            if "mmdet" in opt.train_cfg['version'] and max_norm > 0:
+                total_norm = nn.utils.clip_grad.clip_grad_norm_(model.parameters(), max_norm=max_norm, norm_type=2)
+                clip_coef = max_norm / (total_norm + 1e-6)
+                print("max_norm:{:6d},total_norm:{:8.2f},clip_coef:{}".format(int(max_norm),float(total_norm.cpu()),float(clip_coef.cpu())))
+
 
             # Optimize
             if ni % accumulate == 0:
@@ -323,14 +353,20 @@ def train(opt, device, tb_writer=None, wandb=None):
             if rank in [-1, 0]:
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
-                s = ('%10s' * 2 + '%10.4g' * 6) % (
-                    '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
-                pbar.set_description(s)
+                s = ('%10s' * 3 + '%10.4g' * 7) % (
+                    '%g/%g' % (epoch, epochs - 1), mem, '%g/%g' % (item_num,len(dataloader)),*mloss, targets.shape[0],optimizer.state_dict()['param_groups'][0]['lr'],imgs.shape[-1])
+                print(s)
+                （"max_norm:{:6d}, total_norm:{:8.2f},clip_coef:{}".format(int(max_norm)
+                ("Epoch:{:6d}/{:6d}")
+                #pbar.set_description(s)
 
                 # Plot
                 if plots and ni < 3:
+                    if loss_version == 'mmdet':
+                        targets_plot = torch.cat((targets[:,:2],xyxy2xywh(targets[:,2:]/imgsz)),1).to(device)
+
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
-                    Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()
+                    Thread(target=plot_images, args=(imgs, targets_plot, paths, f), daemon=True).start()
                     # if tb_writer:
                     #     tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
                     #     tb_writer.add_graph(model, imgs)  # add model to tensorboard
