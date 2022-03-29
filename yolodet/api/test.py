@@ -36,7 +36,6 @@ def test(data,
          save_hybrid=False,  # for hybrid auto-labelling
          save_conf=False,  # save auto-label confidences
          plots=True,
-         compute_loss=None,
          log_imgs=0):  # number of logged images
 
     # Initialize/load model and set device
@@ -68,23 +67,14 @@ def test(data,
 
     # Configure
     model.eval()
-    # is_coco = data.endswith('coco.yaml')  # is COCO dataset
-    # with open(data) as f:
-    #     data = yaml.load(f, Loader=yaml.FullLoader)  # model dict
-    # check_dataset(data)  # check
-    is_coco = data['data_type']
-    version = data['version']
+    is_coco = data.get('data_type',False)
+    loss_version = data['version']
     nc = 1 if single_cls else int(data['nc'])  # number of classes
     iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     niou = iouv.numel()
 
     # Logging
-    log_imgs, wandb = min(log_imgs, 100), None  # ceil
-    try:
-        import wandb  # Weights & Biases
-    except ImportError:
-        log_imgs = 0
-
+    log_imgs = min(log_imgs, 100) # ceil
     # Dataloader
     if not training:
         img = torch.zeros((1, 3, imgsz, imgsz), device=device)  # init img
@@ -99,29 +89,34 @@ def test(data,
     s = ('%20s' + '%12s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
     p, r, f1, mp, mr, map50, map, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0.
     loss = torch.zeros(3, device=device)
-    jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
-    for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
+    jdict, stats, ap, ap_class = [], [], [], []
+    for batch_i, (img, targets, paths, metas) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
-        targets = targets.to(device)
+        #targets = targets.to(device)
         nb, _, height, width = img.shape  # batch size, channels, height, width
-
+        if isinstance(metas,list) or loss_version == 'mmdet':
+            shapes = metas[-1]
+            toral_targets = []
+            img_num = 0
+            for gt_label,gt_bbox in zip(targets[0],targets[1]):
+                idx_batch = torch.tensor([img_num for i in range(len(gt_label))])[None].T                          
+                toral_targets.append(torch.cat((idx_batch,gt_label[None].T.cpu(),gt_bbox.cpu()),1))
+                img_num += 1
+            targets = torch.cat(toral_targets)
+            targets = torch.cat((targets[:,:2],xyxy2xywh(targets[:,2:])),1).to(device)
+        else:
+            shapes = metas
+            targets = targets.to(device)
+            targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
         with torch.no_grad():
             # Run model
             t = time_synchronized()
             inf_out, train_out = model(img, augment=augment)  # inference and training outputs
             t0 += time_synchronized() - t
 
-            # Compute loss 没有用
-            # if training:
-            #     loss += compute_loss([x.float() for x in train_out], targets)[1][:3]  # box, obj, cls
-
             # Run NMS
-            if version == 'mmdet':
-                targets = torch.cat((targets[:,:2],xyxy2xywh(targets[:,2:])),1).to(device)
-            else:
-                targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             t = time_synchronized()
             output = non_max_suppression(inf_out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb)
@@ -152,16 +147,6 @@ def test(data,
                     line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
                     with open(save_dir / 'labels' / (path.stem + '.txt'), 'a') as f:
                         f.write(('%g ' * len(line)).rstrip() % line + '\n')
-
-            # W&B logging
-            if plots and len(wandb_images) < log_imgs:
-                box_data = [{"position": {"minX": xyxy[0], "minY": xyxy[1], "maxX": xyxy[2], "maxY": xyxy[3]},
-                             "class_id": int(cls),
-                             "box_caption": "%s %.3f" % (names[cls], conf),
-                             "scores": {"class_score": conf},
-                             "domain": "pixel"} for *xyxy, conf, cls in pred.tolist()]
-                boxes = {"predictions": {"box_data": box_data, "class_labels": names}}  # inference-space
-                wandb_images.append(wandb.Image(img[si], boxes=boxes, caption=path.name))
 
             # Append to pycocotools JSON dictionary
             if save_json:
@@ -227,15 +212,29 @@ def test(data,
         nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
     else:
         nt = torch.zeros(1)
-
+    tables = []
     # Print results
     pf = '%20s' + '%12.3g' * 6  # print format
     print(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
-
+    tables.append(pf % (-1, seen, nt.sum(), mp, mr, map50, map))
     # Print results per class
-    if verbose and nc > 1 and len(stats):
-        for i, c in enumerate(ap_class):
-            print(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
+    if 1:
+        if len(ap_class) == 0:
+            for i in range(nc):
+                tables.append(pf % (-1, seen, 0, 0, 0, 0, 0))
+        else:
+            for i,c in enumerate(nt):
+                if i in ap_class:
+                    idx = ap_class.tolist().index(i)
+                if c > 0:
+                    print(pf % (names[i], seen, c, p[idx], r[idx], ap50[idx], ap[idx]))
+                    tables.append(pf % (i, seen, c, p[idx], r[idx], ap50[idx], ap[idx]))
+                else:
+                    print(pf % (names[i], seen, 0, 0, 0, 0, 0))
+                    tables.append(pf % (i, seen, 0, 0, 0, 0, 0))
+    # if verbose and nc > 1 and len(stats):
+    #     for i, c in enumerate(ap_class):
+    #         print(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
 
     # Print speeds
     t = tuple(x / seen * 1E3 for x in (t0, t1, t0 + t1)) + (imgsz, imgsz, batch_size)  # tuple
@@ -245,9 +244,6 @@ def test(data,
     # Plots
     if plots:
         confusion_matrix.plot(save_dir=save_dir, names=list(names.values()))
-        if wandb and wandb.run:
-            wandb.log({"Images": wandb_images})
-            wandb.log({"Validation": [wandb.Image(str(f), caption=f.name) for f in sorted(save_dir.glob('test*.jpg'))]})
 
     # Save JSON
     if save_json and len(jdict):
@@ -282,7 +278,7 @@ def test(data,
     maps = np.zeros(nc) + map
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
-    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
+    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t, tables
 
 
 if __name__ == '__main__':

@@ -5,6 +5,7 @@ import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from yolodet.utils.general import bbox_iou 
 # from mmcv.cnn import (ConvModule, bias_init_with_prob, constant_init, is_norm,
 #                       normal_init)
 # from mmcv.runner import force_fp32
@@ -14,11 +15,11 @@ import torch.nn.functional as F
 #                         multi_apply, multiclass_nms)
 # from ..builder import HEADS, build_loss
 
-from yolodet.loss.mmdet_loss_utils import GridAssigner,PseudoSampler,CrossEntropyLoss,MSELoss,YOLOBBoxCoder,YOLOAnchorGenerator
-
-# from .base_dense_head import BaseDenseHead
-# from .dense_test_mixins import BBoxTestMixin
+from yolodet.loss.mmdet_loss_utils import GridAssigner,PseudoSampler,CrossEntropyLoss,MSELoss,YOLOBBoxCoder,YOLOAnchorGenerator,YOLOIouBBoxCoder
+import logging
+logger = logging.getLogger(__name__)
 from abc import ABCMeta
+
 
 
 def images_to_levels(target, num_levels):
@@ -100,59 +101,76 @@ class YOLOV3Head(nn.Module, metaclass=ABCMeta):
     #              init_cfg=dict(
     #                  type='Normal', std=0.01,
     #                  override=dict(name='convs_pred'))):
-    def __init__(self,
-                num_classes,
-                anchor_generator,
-                featmap_strides,
-                add = False,
+    def __init__(self,                
+                num_classes = None,
+                anchor_generator = None, 
+                featmap_strides = None,
+                add = None,
+                box_loss_type = 'iou',
+                show_pos_img = None,
+                loss_cls_weight = None,
+                loss_conf_weight = None,
                 one_hot_smoother=0.,
-                pos_iou_thr=0.5,neg_iou_thr=0.5,min_pos_iou=.0,
-                ):
+                loss_xy_weight = None,
+                loss_wh_weight = None,
+                loss_reduction = None,
+                pos_iou_thr = None,
+                neg_iou_thr = None,
+                area_scale = None,
+                obj_scale = None,
+                noobj_scale = None,
+                loss_iou_weight = None):
         super(YOLOV3Head, self).__init__()
         # Check params
         #assert (len(in_channels) == len(out_channels) == len(featmap_strides))
 
         self.num_classes = num_classes
+        self.per_anchor =  len(anchor_generator[0])
         self.add = add
-        #self.in_channels = in_channels
-        #self.out_channels = out_channels
+        self.box_loss_type = box_loss_type
+        self.area_scale = area_scale
+        self.show_pos_img = show_pos_img
+        self.obj_scale = obj_scale
+        self.noobj_scale = noobj_scale
+        self.loss_iou_weight = loss_iou_weight
         self.featmap_strides = featmap_strides
         self.num_levels = len(featmap_strides)
-        #self.train_cfg = train_cfg
-        #self.test_cfg = test_cfg
-        #if self.train_cfg:
-        self.assigner = GridAssigner(pos_iou_thr=0.5,neg_iou_thr=0.5,min_pos_iou=.0,)
-        self.sampler = PseudoSampler()
-                 
-            # self.assigner = build_assigner(self.train_cfg.assigner)
-            # if hasattr(self.train_cfg, 'sampler'):
-            #     sampler_cfg = self.train_cfg.sampler
-            # else:
-        #         sampler_cfg = dict(type='PseudoSampler')
-        #     self.sampler = build_sampler(sampler_cfg, context=self)
-        # self.fp16_enabled = False
-
         self.one_hot_smoother = one_hot_smoother
 
-        # self.conv_cfg = conv_cfg
-        # self.norm_cfg = norm_cfg
-        # self.act_cfg = act_cfg
-
-        self.bbox_coder = YOLOBBoxCoder()
-
+        self.assigner = GridAssigner(pos_iou_thr=pos_iou_thr,neg_iou_thr=neg_iou_thr,min_pos_iou=.0,)
+        self.sampler = PseudoSampler()
+        self.bbox_coder = YOLOBBoxCoder() if self.box_loss_type in ['iou'] else YOLOIouBBoxCoder()
         self.prior_generator = YOLOAnchorGenerator(strides=featmap_strides, base_sizes = anchor_generator)
 
-        self.loss_cls = CrossEntropyLoss(use_sigmoid=True,reduction='sum',loss_weight=1.0)
-        self.loss_conf = CrossEntropyLoss(use_sigmoid=True,reduction='sum',loss_weight=1.0)
-        self.loss_xy = CrossEntropyLoss(use_sigmoid=True,reduction='sum',loss_weight=2.0)
-        self.loss_wh = MSELoss(reduction='sum', loss_weight=2.0)
+        self.loss_cls = CrossEntropyLoss(use_sigmoid=True,reduction=loss_reduction,loss_weight=loss_cls_weight)
+        self.loss_conf = CrossEntropyLoss(use_sigmoid=True,reduction=loss_reduction,loss_weight=loss_conf_weight)
+        self.loss_xy = CrossEntropyLoss(use_sigmoid=True,reduction=loss_reduction,loss_weight=loss_xy_weight)
+        self.loss_wh = MSELoss(reduction=loss_reduction, loss_weight=loss_wh_weight)
         self.num_base_priors = self.prior_generator.num_base_priors[0]
-        assert len(
-            self.prior_generator.num_base_priors) == len(featmap_strides)
+        assert len(self.prior_generator.num_base_priors) == len(featmap_strides)
 
-    # @property
-    # def num_levels(self):
-    #     return len(self.featmap_strides)
+        tag = [
+            'num_classes',
+            'anchor_generator',
+            'featmap_strides',
+            'add',
+            'box_loss_type',
+            'show_pos_img',
+            'loss_cls_weight',
+            'loss_conf_weight',
+            'loss_xy_weight',
+            'loss_wh_weight',
+            'loss_reduction',
+            'pos_iou_thr',
+            'neg_iou_thr',
+            'area_scale',
+            'obj_scale',
+            'noobj_scale',
+            'loss_iou_weight',
+        ]
+        for i in tag:
+            logger.info('   # {:20}: {}'.format(i, eval(i)))
+
 
     @property
     def num_attrib(self):
@@ -201,36 +219,66 @@ class YOLOV3Head(nn.Module, metaclass=ABCMeta):
                                                        gt_bboxes[img_id],
                                                        device))
 
-        target_maps_list, neg_maps_list = self.get_targets(
-            anchor_list, responsible_flag_list, gt_bboxes, gt_labels)
+        if self.box_loss_type == 'iou':
+            target_maps_list, neg_maps_list = self.get_targets(
+                anchor_list, responsible_flag_list, gt_bboxes, gt_labels, img_metas)
 
-        # losses_cls, losses_conf, losses_xy, losses_wh = multi_apply(
-        #     self.loss_single, pred_maps, target_maps_list, neg_maps_list)
+            # losses_cls, losses_conf, losses_xy, losses_wh = multi_apply(
+            #     self.loss_single, pred_maps, target_maps_list, neg_maps_list)
 
-        losses_cls = []
-        losses_conf = []
-        losses_xy = []
-        losses_wh = []
-        for i in range(self.num_levels):
-            losses_cls_i,losses_conf_i,losses_xy_i,losses_wh_i = self.loss_single(pred_maps[i], target_maps_list[i], neg_maps_list[i], featmap_sizes[i])
-            losses_cls.append(losses_cls_i)
-            losses_conf.append(losses_conf_i)
-            losses_xy.append(losses_xy_i)
-            losses_wh.append(losses_wh_i)
-        
-        losses_cls = sum(losses_cls)
-        losses_conf = sum(losses_conf)
-        losses_xywh = sum(losses_xy) + sum(losses_wh)
+            losses_cls = []
+            losses_conf = []
+            losses_xy = []
+            losses_wh = []
+            for i in range(self.num_levels):
+                losses_cls_i,losses_conf_i,losses_xy_i,losses_wh_i = self.loss_single(pred_maps[i], target_maps_list[i], neg_maps_list[i], featmap_sizes[i])
+                losses_cls.append(losses_cls_i)
+                losses_conf.append(losses_conf_i)
+                losses_xy.append(losses_xy_i)
+                losses_wh.append(losses_wh_i)
+            
+            losses_cls = sum(losses_cls)
+            losses_conf = sum(losses_conf)
+            losses_xywh = sum(losses_xy) + sum(losses_wh)
 
-        
-        if not self.add:
-            losses_cls /= num_imgs
-            losses_conf /= num_imgs
-            losses_xywh /= num_imgs
+            
+            if not self.add:
+                losses_cls /= num_imgs
+                losses_conf /= num_imgs
+                losses_xywh /= num_imgs
 
-        loss = losses_cls + losses_conf + losses_xywh
+            loss = losses_cls + losses_conf + losses_xywh
 
-        return loss, torch.stack((losses_xywh,losses_conf,losses_cls,loss)).detach()
+            return loss, torch.stack((losses_xywh,losses_conf,losses_cls,loss)).detach()
+        else:
+            target_maps_list, neg_maps_list, gt_maps_list, anchor_maps_list = self.get_targets_ciou(
+                anchor_list, responsible_flag_list, gt_bboxes, gt_labels, img_metas)
+
+            # losses_cls, losses_conf, losses_xy, losses_wh = multi_apply(
+            #     self.loss_single, pred_maps, target_maps_list, neg_maps_list)
+
+            losses_cls = []
+            losses_conf = []
+            losses_iou = []
+            for i in range(self.num_levels):
+                losses_cls_i,losses_conf_i,losses_iou_i = self.loss_single_ciou(self.featmap_strides[i], pred_maps[i], target_maps_list[i], neg_maps_list[i], featmap_sizes[i], gt_maps_list[i], anchor_maps_list[i])
+                losses_cls.append(losses_cls_i)
+                losses_conf.append(losses_conf_i)
+                losses_iou.append(losses_iou_i)
+            
+            losses_cls = sum(losses_cls)
+            losses_conf = sum(losses_conf)
+            losses_iou = sum(losses_iou) * self.loss_iou_weight
+
+            
+            if not self.add:
+                losses_cls /= num_imgs
+                losses_conf /= num_imgs
+                losses_iou /= num_imgs
+
+            loss = losses_cls + losses_conf + losses_iou
+
+            return loss, torch.stack((losses_iou,losses_conf,losses_cls,loss)).detach()
 
 
     def loss_single(self, pred_map, target_map, neg_map, freature_size):
@@ -253,14 +301,19 @@ class YOLOV3Head(nn.Module, metaclass=ABCMeta):
         # pred_map = pred_map.permute(0, 2, 3,
         #                             1).reshape(num_imgs, -1, self.num_attrib)
         #self.na = 3,
-        pred_map = pred_map.view(num_imgs,3,self.num_attrib,freature_size[0],freature_size[1]).permute(0,1,3,4,2).contiguous().reshape(num_imgs,-1,self.num_attrib)
+        pred_map = pred_map.view(num_imgs,self.per_anchor,self.num_attrib,freature_size[0],freature_size[1]).permute(0,1,3,4,2).contiguous().reshape(num_imgs,-1,self.num_attrib)
         neg_mask = neg_map.float()
         pos_mask = target_map[..., 4]
-        pos_and_neg_mask = neg_mask + pos_mask
+
+        pos_and_neg_mask = neg_mask * self.noobj_scale + pos_mask * self.obj_scale
         pos_mask = pos_mask.unsqueeze(dim=-1)
-        if torch.max(pos_and_neg_mask) > 1.:
+        
+        # if torch.max(pos_and_neg_mask) > 1.:
+        #     warnings.warn('There is overlap between pos and neg sample.')
+        #     pos_and_neg_mask = pos_and_neg_mask.clamp(min=0., max=1.)
+        if torch.max(pos_and_neg_mask) > max(self.noobj_scale, self.obj_scale):
             warnings.warn('There is overlap between pos and neg sample.')
-            pos_and_neg_mask = pos_and_neg_mask.clamp(min=0., max=1.)
+            pos_and_neg_mask = pos_and_neg_mask.clamp(min=0., max=max(self.noobj_scale, self.obj_scale))
 
         pred_xy = pred_map[..., :2]
         pred_wh = pred_map[..., 2:4]
@@ -272,15 +325,87 @@ class YOLOV3Head(nn.Module, metaclass=ABCMeta):
         target_conf = target_map[..., 4]
         target_label = target_map[..., 5:]
 
+        if self.area_scale: # darknet 
+            tcoord_weight = 2. - target_wh[..., 0:1] * target_wh[..., 1:2]
+        else:
+            tcoord_weight = 1.
+        
+
         loss_cls = self.loss_cls(pred_label, target_label, weight=pos_mask)
         loss_conf = self.loss_conf(pred_conf, target_conf, weight=pos_and_neg_mask)
-        loss_xy = self.loss_xy(pred_xy, target_xy, weight=pos_mask)
-        loss_wh = self.loss_wh(pred_wh, target_wh, weight=pos_mask)
+        loss_xy = self.loss_xy(pred_xy, target_xy, weight=pos_mask * tcoord_weight)
+        loss_wh = self.loss_wh(pred_wh, target_wh, weight=pos_mask * tcoord_weight)
 
         return loss_cls, loss_conf, loss_xy, loss_wh
 
+
+    def loss_single_ciou(self, stride, pred_map, target_map, neg_map, freature_size, gt_map, anchor_map):
+        """Compute loss of a single image from a batch.
+
+        Args:
+            pred_map (Tensor): Raw predictions for a single level.
+            target_map (Tensor): The Ground-Truth target for a single level.
+            neg_map (Tensor): The negative masks for a single level.
+
+        Returns:
+            tuple:
+                loss_cls (Tensor): Classification loss.
+                loss_conf (Tensor): Confidence loss.
+                loss_xy (Tensor): Regression loss of x, y coordinate.
+                loss_wh (Tensor): Regression loss of w, h coordinate.
+        """
+
+        num_imgs = len(pred_map)
+        # pred_map = pred_map.permute(0, 2, 3,
+        #                             1).reshape(num_imgs, -1, self.num_attrib)
+        #self.na = 3,
+        pred_map = pred_map.view(num_imgs,self.per_anchor,self.num_attrib,freature_size[0],freature_size[1]).permute(0,1,3,4,2).contiguous().reshape(num_imgs,-1,self.num_attrib)
+        neg_mask = neg_map.float()
+        pos_mask = target_map[..., 0]
+
+        pos_and_neg_mask = neg_mask * self.noobj_scale + pos_mask * self.obj_scale
+        box_pos_mask = pos_mask.bool()
+        pos_mask = pos_mask.unsqueeze(dim=-1)
+        
+        # if torch.max(pos_and_neg_mask) > 1.:
+        #     warnings.warn('There is overlap between pos and neg sample.')
+        #     pos_and_neg_mask = pos_and_neg_mask.clamp(min=0., max=1.)
+        if torch.max(pos_and_neg_mask) > max(self.noobj_scale, self.obj_scale):
+            warnings.warn('There is overlap between pos and neg sample.')
+            pos_and_neg_mask = pos_and_neg_mask.clamp(min=0., max=max(self.noobj_scale, self.obj_scale))
+
+        x_center = anchor_map[..., 0]
+        y_center = anchor_map[..., 1]
+        w = anchor_map[..., 2]
+        h = anchor_map[..., 3]
+        
+        pred_x = pred_map[..., 0].sigmoid() * stride + x_center
+        pred_y = pred_map[..., 1].sigmoid() * stride + y_center
+        pred_w = torch.exp(pred_map[..., 2]) * w
+        pred_h = torch.exp(pred_map[..., 3]) * h
+
+        pred_bboxes = torch.stack((pred_x, pred_y, pred_w, pred_h), dim=-1)
+
+        pred_conf = pred_map[..., 4]
+        pred_label = pred_map[..., 5:]
+
+        target_conf = target_map[..., 0]
+        target_label = target_map[..., 1:]        
+
+        loss_cls = self.loss_cls(pred_label, target_label, weight=pos_mask)
+        loss_conf = self.loss_conf(pred_conf, target_conf, weight=pos_and_neg_mask)
+        #loss_xy = self.loss_xy(pred_xy, target_xy, weight=pos_mask * tcoord_weight)
+        #loss_wh = self.loss_wh(pred_wh, target_wh, weight=pos_mask * tcoord_weight)
+
+        iou = bbox_iou(pred_bboxes[box_pos_mask].T, gt_map[box_pos_mask], x1y1x2y2 = False, CIoU = True)
+        loss_iou = (1 - iou).sum()
+
+
+        return loss_cls, loss_conf, loss_iou
+
+
     def get_targets(self, anchor_list, responsible_flag_list, gt_bboxes_list,
-                    gt_labels_list):
+                    gt_labels_list, img_metas):
         """Compute target maps for anchors in multiple images.
 
         Args:
@@ -312,7 +437,7 @@ class YOLOV3Head(nn.Module, metaclass=ABCMeta):
         for i in range(num_imgs):
             all_target_map,all_neg_map = self._get_targets_single(anchor_list[i],
                             responsible_flag_list[i], gt_bboxes_list[i],
-                            gt_labels_list[i])
+                            gt_labels_list[i], img_metas[i])
             all_target_maps.append(all_target_map)
             all_neg_maps.append(all_neg_map)
 
@@ -324,7 +449,7 @@ class YOLOV3Head(nn.Module, metaclass=ABCMeta):
         return target_maps_list, neg_maps_list
 
     def _get_targets_single(self, anchors, responsible_flags, gt_bboxes,
-                            gt_labels):
+                            gt_labels, img_metas):
         """Generate matching bounding box prior and converted GT.
 
         Args:
@@ -363,6 +488,27 @@ class YOLOV3Head(nn.Module, metaclass=ABCMeta):
         target_map = concat_anchors.new_zeros(
             concat_anchors.size(0), self.num_attrib)
 
+        if self.show_pos_img:
+            import cv2
+            img_shape = img_metas['img_shape']
+            pad_shape = img_metas['pad_shape']
+            t_pad = (pad_shape[0] - img_shape[0]) // 2
+            l_pad = (pad_shape[1] - img_shape[1]) // 2
+
+            img = cv2.imread(img_metas['filename'])
+            img = cv2.resize(img,(img_shape[1],img_shape[0]))
+            
+            for idx in range(len(sampling_result.pos_gt_bboxes)):
+                pos_gt_bbox = sampling_result.pos_gt_bboxes[idx]
+                pos_bbox = sampling_result.pos_bboxes[idx]
+
+                img = cv2.rectangle(img,(int(pos_gt_bbox[0]-l_pad),int(pos_gt_bbox[1]-t_pad)),(int(pos_gt_bbox[2]-l_pad),int(pos_gt_bbox[3]-t_pad)),(0,255,0),1)
+                img = cv2.rectangle(img,(int(pos_bbox[0]-l_pad),int(pos_bbox[1]-t_pad)),(int(pos_bbox[2]-l_pad),int(pos_bbox[3]-t_pad)),(255,0,0),1)
+            cv2.imshow('pos_box',img)
+            k = cv2.waitKey(0)
+            if k == ord('q'):
+                raise Exception
+
         target_map[sampling_result.pos_inds, :4] = self.bbox_coder.encode(
             sampling_result.pos_bboxes, sampling_result.pos_gt_bboxes,
             anchor_strides[sampling_result.pos_inds])
@@ -382,7 +528,194 @@ class YOLOV3Head(nn.Module, metaclass=ABCMeta):
             concat_anchors.size(0), dtype=torch.uint8)
         neg_map[sampling_result.neg_inds] = 1
 
+        if self.show_pos_img:
+            import cv2
+            import copy
+            img_shape = img_metas['img_shape']
+            pad_shape = img_metas['pad_shape']
+            t_pad = (pad_shape[0] - img_shape[0]) // 2
+            l_pad = (pad_shape[1] - img_shape[1]) // 2
+
+            img = cv2.imread(img_metas['filename'])
+            img = cv2.resize(img,(img_shape[1],img_shape[0]))
+
+            #anchor_strides[sampling_result.pos_inds].
+            anchor_strides_unique = anchor_strides[sampling_result.pos_inds].unique()
+            for idx in range(len(anchor_strides_unique)):
+                bboxes = sampling_result.pos_bboxes[anchor_strides[sampling_result.pos_inds] == anchor_strides_unique[idx]]
+                image = img.copy()
+                for bbox in bboxes:
+                    image = cv2.rectangle(image,(int(bbox[0]-l_pad),int(bbox[1]-t_pad)),(int(bbox[2]-l_pad),int(bbox[3]-t_pad)),(255,0,0),1)
+                    image = cv2.putText(image,str(int(anchor_strides_unique[idx].item())),(int(bbox[0]-l_pad),int(bbox[1]-t_pad)),cv2.FONT_HERSHEY_SIMPLEX,1.2,(255,0,0),2)
+                cv2.imshow('pos_box',image)
+                k = cv2.waitKey(0)
+                if k == ord('q'):
+                    raise Exception
+
         return target_map, neg_map
+
+
+    #########################CIOU#############################
+
+    def get_targets_ciou(self, anchor_list, responsible_flag_list, gt_bboxes_list,
+                    gt_labels_list, img_metas):
+        """Compute target maps for anchors in multiple images.
+
+        Args:
+            anchor_list (list[list[Tensor]]): Multi level anchors of each
+                image. The outer list indicates images, and the inner list
+                corresponds to feature levels of the image. Each element of
+                the inner list is a tensor of shape (num_total_anchors, 4).
+            responsible_flag_list (list[list[Tensor]]): Multi level responsible
+                flags of each image. Each element is a tensor of shape
+                (num_total_anchors, )
+            gt_bboxes_list (list[Tensor]): Ground truth bboxes of each image.
+            gt_labels_list (list[Tensor]): Ground truth labels of each box.
+
+        Returns:
+            tuple: Usually returns a tuple containing learning targets.
+                - target_map_list (list[Tensor]): Target map of each level.
+                - neg_map_list (list[Tensor]): Negative map of each level.
+        """
+        num_imgs = len(anchor_list)
+
+        # anchor number of multi levels
+        num_level_anchors = [anchors.size(0) for anchors in anchor_list[0]]
+
+        # results = multi_apply(self._get_targets_single, anchor_list,
+        #                       responsible_flag_list, gt_bboxes_list,
+        #                       gt_labels_list)
+        all_target_maps = []
+        all_neg_maps = []
+        gt_bbox_maps = []
+        anchor_box_maps = []
+        for i in range(num_imgs):
+            all_target_map, all_neg_map, gt_bbox_map, anchor_box_map = self._get_targets_single_ciou(anchor_list[i],
+                            responsible_flag_list[i], gt_bboxes_list[i],
+                            gt_labels_list[i], img_metas[i])
+            all_target_maps.append(all_target_map)
+            all_neg_maps.append(all_neg_map)
+            gt_bbox_maps.append(gt_bbox_map)
+            anchor_box_maps.append(anchor_box_map)
+
+        # all_target_maps, all_neg_maps = results
+        assert num_imgs == len(all_target_maps) == len(all_neg_maps) == len(gt_bbox_maps) == len(anchor_box_maps)
+        target_maps_list = images_to_levels(all_target_maps, num_level_anchors)
+        neg_maps_list = images_to_levels(all_neg_maps, num_level_anchors)
+        gt_maps_list = images_to_levels(gt_bbox_maps, num_level_anchors)
+        anchor_maps_list = images_to_levels(anchor_box_maps, num_level_anchors)
+
+        return target_maps_list, neg_maps_list, gt_maps_list, anchor_maps_list
+
+    def _get_targets_single_ciou(self, anchors, responsible_flags, gt_bboxes,
+                            gt_labels, img_metas):
+        """Generate matching bounding box prior and converted GT.
+
+        Args:
+            anchors (list[Tensor]): Multi-level anchors of the image.
+            responsible_flags (list[Tensor]): Multi-level responsible flags of
+                anchors
+            gt_bboxes (Tensor): Ground truth bboxes of single image.
+            gt_labels (Tensor): Ground truth labels of single image.
+
+        Returns:
+            tuple:
+                target_map (Tensor): Predication target map of each
+                    scale level, shape (num_total_anchors,
+                    5+num_classes)
+                neg_map (Tensor): Negative map of each scale level,
+                    shape (num_total_anchors,)
+        """
+
+        anchor_strides = []
+        for i in range(len(anchors)):
+            anchor_strides.append(
+                torch.tensor(self.featmap_strides[i],
+                             device=gt_bboxes.device).repeat(len(anchors[i])))
+        concat_anchors = torch.cat(anchors)
+        concat_responsible_flags = torch.cat(responsible_flags)
+
+        anchor_strides = torch.cat(anchor_strides)
+        assert len(anchor_strides) == len(concat_anchors) == \
+               len(concat_responsible_flags)
+        assign_result = self.assigner.assign(concat_anchors,
+                                             concat_responsible_flags,
+                                             gt_bboxes)
+        sampling_result = self.sampler.sample(assign_result, concat_anchors,
+                                              gt_bboxes)
+
+        target_map = concat_anchors.new_zeros(
+            concat_anchors.size(0), self.num_attrib-4)
+
+        anchor_bbox = concat_anchors.new_zeros(concat_anchors.size(0), 4)
+
+        gt_bbox = concat_anchors.new_zeros(concat_anchors.size(0), 4)
+
+        if self.show_pos_img:
+            import cv2
+            img_shape = img_metas['img_shape']
+            pad_shape = img_metas['pad_shape']
+            t_pad = (pad_shape[0] - img_shape[0]) // 2
+            l_pad = (pad_shape[1] - img_shape[1]) // 2
+
+            img = cv2.imread(img_metas['filename'])
+            img = cv2.resize(img,(img_shape[1],img_shape[0]))
+            
+            for idx in range(len(sampling_result.pos_gt_bboxes)):
+                pos_gt_bbox = sampling_result.pos_gt_bboxes[idx]
+                pos_bbox = sampling_result.pos_bboxes[idx]
+
+                img = cv2.rectangle(img,(int(pos_gt_bbox[0]-l_pad),int(pos_gt_bbox[1]-t_pad)),(int(pos_gt_bbox[2]-l_pad),int(pos_gt_bbox[3]-t_pad)),(0,255,0),1)
+                img = cv2.rectangle(img,(int(pos_bbox[0]-l_pad),int(pos_bbox[1]-t_pad)),(int(pos_bbox[2]-l_pad),int(pos_bbox[3]-t_pad)),(255,0,0),1)
+            cv2.imshow('pos_box',img)
+            k = cv2.waitKey(0)
+            if k == ord('q'):
+                raise Exception
+
+        gt_bbox[sampling_result.pos_inds, :4], anchor_bbox[sampling_result.pos_inds, :4] = self.bbox_coder.encode(
+            sampling_result.pos_bboxes, sampling_result.pos_gt_bboxes,
+            anchor_strides[sampling_result.pos_inds])
+
+        target_map[sampling_result.pos_inds, 0] = 1
+
+        gt_labels_one_hot = F.one_hot(
+            gt_labels.long(), num_classes=self.num_classes).float()
+        if self.one_hot_smoother != 0:  # label smooth
+            gt_labels_one_hot = gt_labels_one_hot * (
+                1 - self.one_hot_smoother
+            ) + self.one_hot_smoother / self.num_classes
+        target_map[sampling_result.pos_inds, 1:] = gt_labels_one_hot[
+            sampling_result.pos_assigned_gt_inds]
+
+        neg_map = concat_anchors.new_zeros(
+            concat_anchors.size(0), dtype=torch.uint8)
+        neg_map[sampling_result.neg_inds] = 1
+
+        if self.show_pos_img:
+            import cv2
+            import copy
+            img_shape = img_metas['img_shape']
+            pad_shape = img_metas['pad_shape']
+            t_pad = (pad_shape[0] - img_shape[0]) // 2
+            l_pad = (pad_shape[1] - img_shape[1]) // 2
+
+            img = cv2.imread(img_metas['filename'])
+            img = cv2.resize(img,(img_shape[1],img_shape[0]))
+
+            #anchor_strides[sampling_result.pos_inds].
+            anchor_strides_unique = anchor_strides[sampling_result.pos_inds].unique()
+            for idx in range(len(anchor_strides_unique)):
+                bboxes = sampling_result.pos_bboxes[anchor_strides[sampling_result.pos_inds] == anchor_strides_unique[idx]]
+                image = img.copy()
+                for bbox in bboxes:
+                    image = cv2.rectangle(image,(int(bbox[0]-l_pad),int(bbox[1]-t_pad)),(int(bbox[2]-l_pad),int(bbox[3]-t_pad)),(255,0,0),1)
+                    image = cv2.putText(image,str(int(anchor_strides_unique[idx].item())),(int(bbox[0]-l_pad),int(bbox[1]-t_pad)),cv2.FONT_HERSHEY_SIMPLEX,1.2,(255,0,0),2)
+                cv2.imshow('pos_box',image)
+                k = cv2.waitKey(0)
+                if k == ord('q'):
+                    raise Exception
+
+        return target_map, neg_map, gt_bbox, anchor_bbox
 
     def aug_test(self, feats, img_metas, rescale=False):
         """Test function with test time augmentation.

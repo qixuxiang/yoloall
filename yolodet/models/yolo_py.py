@@ -1,417 +1,142 @@
-import torch.nn as nn
+import argparse
+import logging
+import math
+import os
+import sys
+from copy import deepcopy
+from pathlib import Path
+
 import torch
-import torch.nn.functional as F
-#import config.yolov4_config as cfg
-from yolodet.models.py_model.CSPDarknet53 import _BuildCSPDarknet53
-from yolodet.models.py_model.mobilenetv2 import _BuildMobilenetV2
-from yolodet.models.py_model.mobilenetv3 import _BuildMobilenetV3
-from yolodet.models.py_model.mobilenetv2_CoordAttention import _BuildMobileNetV2_CoordAttention
-from yolodet.models.py_model.global_context_block import ContextBlock2d
+import torch.nn as nn
 
+sys.path.append('./')  # to run '$ python *.py' files in subdirectories
+logger = logging.getLogger(__name__)
 
-class Conv(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1):
-        super(Conv, self).__init__()
+from yolodet.models.common_py import * #Conv, Bottleneck, SPP, DWConv, Focus, BottleneckCSP, C3, Concat, NMS, autoShape
+from yolodet.models.experimental import MixConv2d, CrossConv
+from yolodet.dataset.autoanchor import check_anchor_order
+from yolodet.utils.general import make_divisible, check_file, set_logging
+from yolodet.utils.torch_utils import time_synchronized, fuse_conv_and_bn, model_info, scale_img, initialize_weights, \
+    select_device, copy_attr
 
-        self.conv = nn.Sequential(
-            nn.Conv2d(
-                in_channels,
-                out_channels,
-                kernel_size,
-                stride,
-                kernel_size // 2,
-                bias=False,
-            ),
-            nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU(),
-        )
+try:
+    import thop  # for FLOPS computation
+except ImportError:
+    thop = None
+py_path = '/home/yu/workspace/yoloall/yoloall/yolodet/models/py_model'
 
-    def forward(self, x):
-        return self.conv(x)
-
-
-class SpatialPyramidPooling(nn.Module):
-    def __init__(self, feature_channels, pool_sizes=[5, 9, 13]):
-        super(SpatialPyramidPooling, self).__init__()
-
-        # head conv
-        self.head_conv = nn.Sequential(
-            Conv(feature_channels[-1], feature_channels[-1] // 2, 1),
-            Conv(feature_channels[-1] // 2, feature_channels[-1], 3),
-            Conv(feature_channels[-1], feature_channels[-1] // 2, 1),
-        )
-
-        self.maxpools = nn.ModuleList(
-            [
-                nn.MaxPool2d(pool_size, 1, pool_size // 2)
-                for pool_size in pool_sizes
-            ]
-        )
-        self.__initialize_weights()
-
-    def forward(self, x):
-        x = self.head_conv(x)
-        features = [maxpool(x) for maxpool in self.maxpools]
-        features = torch.cat([x] + features, dim=1)
-
-        return features
-
-    def __initialize_weights(self):
-        print("**" * 10, "Initing head_conv weights", "**" * 10)
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                m.weight.data.normal_(0, 0.01)
-                if m.bias is not None:
-                    m.bias.data.zero_()
-
-                print("initing {}".format(m))
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-
-                print("initing {}".format(m))
-
-
-class Upsample(nn.Module):
-    def __init__(self, in_channels, out_channels, scale=2):
-        super(Upsample, self).__init__()
-
-        self.upsample = nn.Sequential(
-            Conv(in_channels, out_channels, 1), nn.Upsample(scale_factor=scale)
-        )
-
-    def forward(self, x):
-        return self.upsample(x)
-
-
-class Downsample(nn.Module):
-    def __init__(self, in_channels, out_channels, scale=2):
-        super(Downsample, self).__init__()
-
-        self.downsample = Conv(in_channels, out_channels, 3, 2)
-
-    def forward(self, x):
-        return self.downsample(x)
-
-
-class PANet(nn.Module):
-    def __init__(self, feature_channels):
-        super(PANet, self).__init__()
-
-        self.feature_transform3 = Conv(
-            feature_channels[0], feature_channels[0] // 2, 1
-        )
-        self.feature_transform4 = Conv(
-            feature_channels[1], feature_channels[1] // 2, 1
-        )
-
-        self.resample5_4 = Upsample(
-            feature_channels[2] // 2, feature_channels[1] // 2
-        )
-        self.resample4_3 = Upsample(
-            feature_channels[1] // 2, feature_channels[0] // 2
-        )
-        self.resample3_4 = Downsample(
-            feature_channels[0] // 2, feature_channels[1] // 2
-        )
-        self.resample4_5 = Downsample(
-            feature_channels[1] // 2, feature_channels[2] // 2
-        )
-
-        self.downstream_conv5 = nn.Sequential(
-            Conv(feature_channels[2] * 2, feature_channels[2] // 2, 1),
-            Conv(feature_channels[2] // 2, feature_channels[2], 3),
-            Conv(feature_channels[2], feature_channels[2] // 2, 1),
-        )
-        self.downstream_conv4 = nn.Sequential(
-            Conv(feature_channels[1], feature_channels[1] // 2, 1),
-            Conv(feature_channels[1] // 2, feature_channels[1], 3),
-            Conv(feature_channels[1], feature_channels[1] // 2, 1),
-            Conv(feature_channels[1] // 2, feature_channels[1], 3),
-            Conv(feature_channels[1], feature_channels[1] // 2, 1),
-        )
-        self.downstream_conv3 = nn.Sequential(
-            Conv(feature_channels[0], feature_channels[0] // 2, 1),
-            Conv(feature_channels[0] // 2, feature_channels[0], 3),
-            Conv(feature_channels[0], feature_channels[0] // 2, 1),
-            Conv(feature_channels[0] // 2, feature_channels[0], 3),
-            Conv(feature_channels[0], feature_channels[0] // 2, 1),
-        )
-
-        self.upstream_conv4 = nn.Sequential(
-            Conv(feature_channels[1], feature_channels[1] // 2, 1),
-            Conv(feature_channels[1] // 2, feature_channels[1], 3),
-            Conv(feature_channels[1], feature_channels[1] // 2, 1),
-            Conv(feature_channels[1] // 2, feature_channels[1], 3),
-            Conv(feature_channels[1], feature_channels[1] // 2, 1),
-        )
-        self.upstream_conv5 = nn.Sequential(
-            Conv(feature_channels[2], feature_channels[2] // 2, 1),
-            Conv(feature_channels[2] // 2, feature_channels[2], 3),
-            Conv(feature_channels[2], feature_channels[2] // 2, 1),
-            Conv(feature_channels[2] // 2, feature_channels[2], 3),
-            Conv(feature_channels[2], feature_channels[2] // 2, 1),
-        )
-        self.__initialize_weights()
-
-    def forward(self, features):
-        features = [
-            self.feature_transform3(features[0]),
-            self.feature_transform4(features[1]),
-            features[2],
-        ]
-
-        downstream_feature5 = self.downstream_conv5(features[2])
-        downstream_feature4 = self.downstream_conv4(
-            torch.cat(
-                [features[1], self.resample5_4(downstream_feature5)], dim=1
-            )
-        )
-        downstream_feature3 = self.downstream_conv3(
-            torch.cat(
-                [features[0], self.resample4_3(downstream_feature4)], dim=1
-            )
-        )
-
-        upstream_feature4 = self.upstream_conv4(
-            torch.cat(
-                [self.resample3_4(downstream_feature3), downstream_feature4],
-                dim=1,
-            )
-        )
-        upstream_feature5 = self.upstream_conv5(
-            torch.cat(
-                [self.resample4_5(upstream_feature4), downstream_feature5],
-                dim=1,
-            )
-        )
-
-        return [downstream_feature3, upstream_feature4, upstream_feature5]
-
-    def __initialize_weights(self):
-        print("**" * 10, "Initing PANet weights", "**" * 10)
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                m.weight.data.normal_(0, 0.01)
-                if m.bias is not None:
-                    m.bias.data.zero_()
-
-                print("initing {}".format(m))
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-
-                print("initing {}".format(m))
-
-
-class PredictNet(nn.Module):
-    def __init__(self, feature_channels, target_channels):
-        super(PredictNet, self).__init__()
-
-        self.predict_conv = nn.ModuleList(
-            [
-                nn.Sequential(
-                    Conv(feature_channels[i] // 2, feature_channels[i], 3),
-                    nn.Conv2d(feature_channels[i], target_channels, 1),
-                )
-                for i in range(len(feature_channels))
-            ]
-        )
-        self.__initialize_weights()
-
-    def forward(self, features):
-        predicts = [
-            predict_conv(feature)
-            for predict_conv, feature in zip(self.predict_conv, features)
-        ]
-
-        return predicts
-
-    def __initialize_weights(self):
-        print("**" * 10, "Initing PredictNet weights", "**" * 10)
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                m.weight.data.normal_(0, 0.01)
-                if m.bias is not None:
-                    m.bias.data.zero_()
-
-                print("initing {}".format(m))
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-
-                print("initing {}".format(m))
-
-
-class Yolo_head(nn.Module):
-    def __init__(self, nC, anchors, stride):
-        super(Yolo_head, self).__init__()
-
-        self.__anchors = anchors
-        self.__nA = len(anchors)
-        self.__nC = nC
-        self.__stride = stride
-
-    def forward(self, p):
-        bs, nG = p.shape[0], p.shape[-1]
-        p = p.view(bs, self.__nA, 5 + self.__nC, nG, nG).permute(0, 3, 4, 1, 2)
-
-        p_de = self.__decode(p.clone())
-
-        return (p, p_de)
-
-    def __decode(self, p):
-        batch_size, output_size = p.shape[:2]
-
-        device = p.device
-        stride = self.__stride
-        anchors = (1.0 * self.__anchors).to(device)
-
-        conv_raw_dxdy = p[:, :, :, :, 0:2]
-        conv_raw_dwdh = p[:, :, :, :, 2:4]
-        conv_raw_conf = p[:, :, :, :, 4:5]
-        conv_raw_prob = p[:, :, :, :, 5:]
-
-        y = torch.arange(0, output_size).unsqueeze(1).repeat(1, output_size)
-        x = torch.arange(0, output_size).unsqueeze(0).repeat(output_size, 1)
-        grid_xy = torch.stack([x, y], dim=-1)
-        grid_xy = (
-            grid_xy.unsqueeze(0)
-            .unsqueeze(3)
-            .repeat(batch_size, 1, 1, 3, 1)
-            .float()
-            .to(device)
-        )
-
-        pred_xy = (torch.sigmoid(conv_raw_dxdy) + grid_xy) * stride
-        pred_wh = (torch.exp(conv_raw_dwdh) * anchors) * stride
-        pred_xywh = torch.cat([pred_xy, pred_wh], dim=-1)
-        pred_conf = torch.sigmoid(conv_raw_conf)
-        pred_prob = torch.sigmoid(conv_raw_prob)
-        pred_bbox = torch.cat([pred_xywh, pred_conf, pred_prob], dim=-1)
-
-        return (
-            pred_bbox.view(-1, 5 + self.__nC)
-            if not self.training
-            else pred_bbox
-        )
-
-class YOLOv4(nn.Module):
-    def __init__(self, model_name, weight_path=None, out_channels=255, resume=False, showatt=False, feature_channels=0):
-        super(YOLOv4, self).__init__()
-        self.showatt = showatt
-        if model_name == "YOLOv4":
-            # CSPDarknet53 backbone
-            self.backbone, feature_channels = _BuildCSPDarknet53(
-                weight_path=weight_path, resume=resume
-            )
-        elif model_name == "Mobilenet-YOLOv4":
-            # MobilenetV2 backbone
-            self.backbone, feature_channels = _BuildMobilenetV2(
-                weight_path=weight_path, resume=resume
-            )
-        elif model_name == "CoordAttention-YOLOv4":
-            # MobilenetV2 backbone
-            self.backbone, feature_channels = _BuildMobileNetV2_CoordAttention(
-                weight_path=weight_path, resume=resume
-            )
-        elif model_name == "Mobilenetv3-YOLOv4":
-            # MobilenetV3 backbone
-            self.backbone, feature_channels = _BuildMobilenetV3(
-                weight_path=weight_path, resume=resume
-            )
-        else:
-            assert print("model type must be YOLOv4 or Mobilenet-YOLOv4")
-
-        if self.showatt:
-            self.attention = ContextBlock2d(feature_channels[-1], feature_channels[-1])
-        # Spatial Pyramid Pooling
-        self.spp = SpatialPyramidPooling(feature_channels)
-
-        # Path Aggregation Net
-        self.panet = PANet(feature_channels)
-
-        # predict
-        self.predict_net = PredictNet(feature_channels, out_channels)
-
-    def forward(self, x):
-        atten = None
-        features = self.backbone(x)
-        if self.showatt:
-            features[-1], atten = self.attention(features[-1])
-        features[-1] = self.spp(features[-1])
-        features = self.panet(features)
-        predicts = self.predict_net(features)
-        return predicts, atten
 
 class Model(nn.Module):
-    """
-    Note ： int the __init__(), to define the modules should be in order, because of the weight file is order
-    """
-    def __init__(self, cfg, ch=3, nc=None, weight_path=None, resume=False, showatt=False):
+    def __init__(self, cfg, ch=3, nc=None):  # model, input channels, number of classes
         super(Model, self).__init__()
-        self.__showatt = showatt
         
-        a = cfg['anchors']
-        self.stride = cfg['step']
-        self.version = cfg['version']
-        #per_scale = len(a[0])
+        version = cfg['version']
+        anchors = cfg['anchors']
+        model_name = cfg['model']
 
-        temp = []
-        for i in range(len(a)):
-            res = []
-            for j in range(0,len(a[i]),2):
-                res.append((round(a[i][j]/self.stride[i],3),round(a[i][j+1]/self.stride[i],3)))
-            temp.append(res)
-        per_scale = len(temp[0])
-        self.__anchors = torch.FloatTensor(temp)
-        self.__strides = torch.FloatTensor(self.stride)
+        try:
+            exec(f'from yolodet.models.py_model.{model_name} import YOLO')
+        except:
+            logger.info(f'{model_name} not exist in {py_path}')
+        
+        self.names = [str(i) for i in range(nc)]
+        
 
-        # if cfg.TRAIN["DATA_TYPE"] == "VOC":
-        #     self.__nC = cfg.VOC_DATA["NUM"]
-        # elif cfg.TRAIN["DATA_TYPE"] == "COCO":
-        #     self.__nC = cfg.COCO_DATA["NUM"]
-        # else:
-        self.__nC = nc #cfg.Customer_DATA["NUM"]
+        self.model = eval('YOLO')(nc, anchors, ch)
+        # Build strides, anchors
+        m = self.model.detect  # Detect()
+        m.version = version
+        if isinstance(m, Detect):
+            s = 256  # 2x min stride
+            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+            m.anchors /= m.stride.view(-1, 1, 1)
+            check_anchor_order(m)
+            self.stride = m.stride
+            self._initialize_biases()  # only run once
+            # print('Strides: %s' % m.stride.tolist())
 
-        self.__out_channel = per_scale * (self.__nC + 5)
+        # Init weights, biases
+        initialize_weights(self)
+        self.info()
+        logger.info('')
 
-        self.__yolov4 = YOLOv4(
-            model_name = cfg['cfg'],
-            weight_path=weight_path,
-            out_channels=self.__out_channel,
-            resume=resume,
-            showatt=showatt
-        )
-        # small
-        self.__head_s = Yolo_head(
-            nC=self.__nC, anchors=self.__anchors[0], stride=self.__strides[0]
-        )
-        # medium
-        self.__head_m = Yolo_head(
-            nC=self.__nC, anchors=self.__anchors[1], stride=self.__strides[1]
-        )
-        # large
-        self.__head_l = Yolo_head(
-            nC=self.__nC, anchors=self.__anchors[2], stride=self.__strides[2]
-        )
-
-    def forward(self, x):
-        out = []
-        [x_s, x_m, x_l], atten = self.__yolov4(x)
-
-        out.append(self.__head_s(x_s))
-        out.append(self.__head_m(x_m))
-        out.append(self.__head_l(x_l))
-
-        if self.training:
-            p, p_d = list(zip(*out))
-            return p, p_d  # smalll, medium, large
+    def forward(self, x, augment=False, profile=False):
+        if augment:
+            img_size = x.shape[-2:]  # height, width
+            s = [1, 0.83, 0.67]  # scales
+            f = [None, 3, None]  # flips (2-ud, 3-lr)
+            y = []  # outputs
+            for si, fi in zip(s, f):
+                xi = scale_img(x.flip(fi) if fi else x, si)
+                yi = self.forward_once(xi)[0]  # forward
+                # cv2.imwrite('img%g.jpg' % s, 255 * xi[0].numpy().transpose((1, 2, 0))[:, :, ::-1])  # save
+                yi[..., :4] /= si  # de-scale
+                if fi == 2:
+                    yi[..., 1] = img_size[0] - yi[..., 1]  # de-flip ud
+                elif fi == 3:
+                    yi[..., 0] = img_size[1] - yi[..., 0]  # de-flip lr
+                y.append(yi)
+            return torch.cat(y, 1), None  # augmented inference, train
         else:
-            p, p_d = list(zip(*out))
-            if self.__showatt:
-                return p, torch.cat(p_d, 0), atten
-            return p, torch.cat(p_d, 0)
+            return self.forward_once(x, profile)  # single-scale inference, train
+
+    def forward_once(self, x, profile=False):
+        t = time_synchronized()
+        x = self.model(x)
+        dt = (time_synchronized() - t)*100
+        #print('%.1fms total'% dt)
+        return x
+
+    def _initialize_biases(self, cf=None):  # initialize biases into Detect(), cf is class frequency
+        # https://arxiv.org/abs/1708.02002 section 3.3
+        # cf = torch.bincount(torch.tensor(np.concatenate(dataset.labels, 0)[:, 0]).long(), minlength=nc) + 1.
+        m = self.model.detect  # Detect() module
+        for mi, s in zip(m.m, m.stride):  # from
+            b = mi.bias.view(m.na, -1)  # conv.bias(255) to (3,85)
+            b.data[:, 4] += math.log(8 / (640 / s) ** 2)  # obj (8 objects per 640 image)
+            b.data[:, 5:] += math.log(0.6 / (m.nc - 0.99)) if cf is None else torch.log(cf / cf.sum())  # cls
+            mi.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
+
+    def _print_biases(self):
+        m = self.model[-1]  # Detect() module
+        for mi in m.m:  # from
+            b = mi.bias.detach().view(m.na, -1).T  # conv.bias(255) to (3,85)
+            print(('%6g Conv2d.bias:' + '%10.3g' * 6) % (mi.weight.shape[1], *b[:5].mean(1).tolist(), b[5:].mean()))
+
+    # def _print_weights(self):
+    #     for m in self.model.modules():
+    #         if type(m) is Bottleneck:
+    #             print('%10.3g' % (m.w.detach().sigmoid() * 2))  # shortcut weights
+
+    def fuse(self):  # fuse model Conv2d() + BatchNorm2d() layers
+        print('Fusing layers... ')
+        for m in self.model.modules():
+            if type(m) is Conv and hasattr(m, 'bn'):
+                m.conv = fuse_conv_and_bn(m.conv, m.bn)  # update conv
+                delattr(m, 'bn')  # remove batchnorm
+                m.forward = m.fuseforward  # update forward
+        self.info()
+        return self
+
+    def nms(self, mode=True):  # add or remove NMS module
+        present = type(self.model[-1]) is NMS  # last layer is NMS
+        if mode and not present:
+            print('Adding NMS... ')
+            m = NMS()  # module
+            m.f = -1  # from
+            m.i = self.model[-1].i + 1  # index
+            self.model.add_module(name='%s' % m.i, module=m)  # add
+            self.eval()
+        elif not mode and present:
+            print('Removing NMS... ')
+            self.model = self.model[:-1]  # remove
+        return self
+
+    def autoshape(self):  # add autoShape module
+        print('Adding autoShape... ')
+        m = autoShape(self)  # wrap model
+        copy_attr(m, self, include=('yaml', 'nc', 'hyp', 'names', 'stride'), exclude=())  # copy attributes
+        return m
+
+    def info(self, verbose=False, img_size=640):  # print model information
+        model_info(self, verbose, img_size)

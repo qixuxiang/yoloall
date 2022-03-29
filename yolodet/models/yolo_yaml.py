@@ -12,7 +12,7 @@ import torch.nn as nn
 sys.path.append('./')  # to run '$ python *.py' files in subdirectories
 logger = logging.getLogger(__name__)
 
-from yolodet.models.common import Conv, Bottleneck, SPP, DWConv, Focus, BottleneckCSP, C3, Concat, NMS, autoShape
+from yolodet.models.common import * #Conv, Bottleneck, SPP, DWConv, Focus, BottleneckCSP, C3, Concat, NMS, autoShape
 from yolodet.models.experimental import MixConv2d, CrossConv
 from yolodet.dataset.autoanchor import check_anchor_order
 from yolodet.utils.general import make_divisible, check_file, set_logging
@@ -81,29 +81,30 @@ class Detect(nn.Module):
 class Model(nn.Module):
     def __init__(self, cfg='yolov5s.yaml', ch=3, nc=None):  # model, input channels, number of classes
         super(Model, self).__init__()
-        if isinstance(cfg['cfg'], dict):
+        if isinstance(cfg['model'], dict):
             self.yaml = cfg  # model dict
         else:  # is *.yaml
             import yaml  # for torch hub
-            model_yaml = os.path.join(cfg_path,cfg['cfg'])
+            model_yaml = os.path.join(cfg_path,cfg['model'])
             self.yaml_file = Path(model_yaml).name
             with open(model_yaml) as f:
                 self.yaml = yaml.load(f, Loader=yaml.FullLoader)  # model dict
         self.version = cfg['version']
         # Define model
         ch = self.yaml['ch'] = self.yaml.get('ch', ch)  # input channels
-        if nc and nc != self.yaml['nc']:
-            logger.info('Overriding model.yaml nc=%g with nc=%g' % (self.yaml['nc'], nc))
+        if nc and nc != self.yaml.get('nc', None):
+            logger.info('Overriding model.yaml nc=%s with nc=%s' % (self.yaml.get('nc', None), nc))
             self.yaml['nc'] = nc  # override yaml value
-        if cfg['anchors'] != self.yaml['anchors']:
-            logger.info('Overriding model.yaml anchors=%g with anchors=%g' % (self.yaml['anchors'], cfg['anchors']))
+        if cfg['anchors'] != self.yaml.get('anchors',None):
+            logger.info('Overriding model.yaml anchors=%s with anchors=%s' % (self.yaml.get('anchors',None), cfg['anchors']))
             self.yaml['anchors'] = cfg['anchors']  # override yaml value
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
         self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
         # print([x.shape for x in self.forward(torch.zeros(1, ch, 64, 64))])
-        self.model.version = self.version
+        #self.model.version = self.version
         # Build strides, anchors
         m = self.model[-1]  # Detect()
+        m.version = self.version
         if isinstance(m, Detect):
             s = 128  # 2x min stride
             m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
@@ -186,7 +187,7 @@ class Model(nn.Module):
             if type(m) is Conv and hasattr(m, 'bn'):
                 m.conv = fuse_conv_and_bn(m.conv, m.bn)  # update conv
                 delattr(m, 'bn')  # remove batchnorm
-                m.forward = m.fuseforward  # update forward
+                m.forward = m.forward_fuse  # update forward
         self.info()
         return self
 
@@ -214,12 +215,99 @@ class Model(nn.Module):
         model_info(self, verbose, img_size)
 
 
+# def parse_model(d, ch):  # model_dict, input_channels(3)
+#     logger.info('\n%3s%18s%3s%10s  %-40s%-30s' % ('', 'from', 'n', 'params', 'module', 'arguments'))
+#     anchors, nc, gd, gw = d['anchors'], d['nc'], d['depth_multiple'], d['width_multiple']
+#     na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors
+#     no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)
+
+
+#     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
+#     for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
+#         m = eval(m) if isinstance(m, str) else m  # eval strings
+#         for j, a in enumerate(args):
+#             try:
+#                 args[j] = eval(a) if isinstance(a, str) else a  # eval strings
+#             except:
+#                 pass
+
+#         n = max(round(n * gd), 1) if n > 1 else n  # depth gain
+#         if m in [Conv, Bottleneck, SPP, DWConv, MixConv2d, Focus, CrossConv, BottleneckCSP, C3]:
+#             c1, c2 = ch[f], args[0]
+
+#             # Normal
+#             # if i > 0 and args[0] != no:  # channel expansion factor
+#             #     ex = 1.75  # exponential (default 2.0)
+#             #     e = math.log(c2 / ch[1]) / math.log(2)
+#             #     c2 = int(ch[1] * ex ** e)
+#             # if m != Focus:
+
+#             c2 = make_divisible(c2 * gw, 8) if c2 != no else c2
+
+#             # Experimental
+#             # if i > 0 and args[0] != no:  # channel expansion factor
+#             #     ex = 1 + gw  # exponential (default 2.0)
+#             #     ch1 = 32  # ch[1]
+#             #     e = math.log(c2 / ch1) / math.log(2)  # level 1-n
+#             #     c2 = int(ch1 * ex ** e)
+#             # if m != Focus:
+#             #     c2 = make_divisible(c2, 8) if c2 != no else c2
+
+#             args = [c1, c2, *args[1:]]
+#             if m in [BottleneckCSP, C3]:
+#                 args.insert(2, n)
+#                 n = 1
+#         elif m is nn.BatchNorm2d:
+#             args = [ch[f]]
+#         elif m is Concat:
+#             c2 = sum([ch[-1 if x == -1 else x + 1] for x in f])
+#         elif m is Detect:
+#             args.append([ch[x + 1] for x in f])
+#             if isinstance(args[1], int):  # number of anchors
+#                 args[1] = [list(range(args[1] * 2))] * len(f)
+#         else:
+#             c2 = ch[f]
+
+#         m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)  # module
+#         t = str(m)[8:-2].replace('__main__.', '')  # module type
+#         np = sum([x.numel() for x in m_.parameters()])  # number params
+#         m_.i, m_.f, m_.type, m_.np = i, f, t, np  # attach index, 'from' index, type, number params
+#         logger.info('%3s%18s%3s%10.0f  %-40s%-30s' % (i, f, n, np, t, args))  # print
+#         save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
+#         layers.append(m_)
+#         ch.append(c2)
+#     return nn.Sequential(*layers), sorted(save)
+
+
+# if __name__ == '__main__':
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument('--cfg', type=str, default='yolov5s.yaml', help='model.yaml')
+#     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+#     opt = parser.parse_args()
+#     opt.cfg = check_file(opt.cfg)  # check file
+#     set_logging()
+#     device = select_device(opt.device)
+
+#     # Create model
+#     model = Model(opt.cfg).to(device)
+#     model.train()
+
+#     # Profile
+#     # img = torch.rand(8 if torch.cuda.is_available() else 1, 3, 640, 640).to(device)
+#     # y = model(img, profile=True)
+
+#     # Tensorboard
+#     # from torch.utils.tensorboard import SummaryWriter
+#     # tb_writer = SummaryWriter()
+#     # print("Run 'tensorboard --logdir=models/runs' to view tensorboard at http://localhost:6006/")
+#     # tb_writer.add_graph(model.model, img)  # add model to tensorboard
+#     # tb_writer.add_image('test', img[0], dataformats='CWH')  # add model to tensorboard
+
 def parse_model(d, ch):  # model_dict, input_channels(3)
-    logger.info('\n%3s%18s%3s%10s  %-40s%-30s' % ('', 'from', 'n', 'params', 'module', 'arguments'))
+    #LOGGER.info(f"\n{'':>3}{'from':>18}{'n':>3}{'params':>10}  {'module':<40}{'arguments':<30}")
     anchors, nc, gd, gw = d['anchors'], d['nc'], d['depth_multiple'], d['width_multiple']
     na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors
     no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)
-
 
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
     for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
@@ -227,77 +315,43 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         for j, a in enumerate(args):
             try:
                 args[j] = eval(a) if isinstance(a, str) else a  # eval strings
-            except:
+            except NameError:
                 pass
 
-        n = max(round(n * gd), 1) if n > 1 else n  # depth gain
-        if m in [Conv, Bottleneck, SPP, DWConv, MixConv2d, Focus, CrossConv, BottleneckCSP, C3]:
+        n = n_ = max(round(n * gd), 1) if n > 1 else n  # depth gain
+        if m in [Conv, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, MixConv2d, Focus, CrossConv,
+                 BottleneckCSP, C3, C3TR, C3SPP, C3Ghost]:
             c1, c2 = ch[f], args[0]
-
-            # Normal
-            # if i > 0 and args[0] != no:  # channel expansion factor
-            #     ex = 1.75  # exponential (default 2.0)
-            #     e = math.log(c2 / ch[1]) / math.log(2)
-            #     c2 = int(ch[1] * ex ** e)
-            # if m != Focus:
-
-            c2 = make_divisible(c2 * gw, 8) if c2 != no else c2
-
-            # Experimental
-            # if i > 0 and args[0] != no:  # channel expansion factor
-            #     ex = 1 + gw  # exponential (default 2.0)
-            #     ch1 = 32  # ch[1]
-            #     e = math.log(c2 / ch1) / math.log(2)  # level 1-n
-            #     c2 = int(ch1 * ex ** e)
-            # if m != Focus:
-            #     c2 = make_divisible(c2, 8) if c2 != no else c2
+            if c2 != no:  # if not output
+                c2 = make_divisible(c2 * gw, 8)
 
             args = [c1, c2, *args[1:]]
-            if m in [BottleneckCSP, C3]:
-                args.insert(2, n)
+            if m in [BottleneckCSP, C3, C3TR, C3Ghost]:
+                args.insert(2, n)  # number of repeats
                 n = 1
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
         elif m is Concat:
-            c2 = sum([ch[-1 if x == -1 else x + 1] for x in f])
+            c2 = sum(ch[x] for x in f)
         elif m is Detect:
-            args.append([ch[x + 1] for x in f])
+            args.append([ch[x] for x in f])
             if isinstance(args[1], int):  # number of anchors
                 args[1] = [list(range(args[1] * 2))] * len(f)
+        elif m is Contract:
+            c2 = ch[f] * args[0] ** 2
+        elif m is Expand:
+            c2 = ch[f] // args[0] ** 2
         else:
             c2 = ch[f]
 
-        m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)  # module
+        m_ = nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)  # module
         t = str(m)[8:-2].replace('__main__.', '')  # module type
-        np = sum([x.numel() for x in m_.parameters()])  # number params
+        np = sum(x.numel() for x in m_.parameters())  # number params
         m_.i, m_.f, m_.type, m_.np = i, f, t, np  # attach index, 'from' index, type, number params
-        logger.info('%3s%18s%3s%10.0f  %-40s%-30s' % (i, f, n, np, t, args))  # print
+        #LOGGER.info(f'{i:>3}{str(f):>18}{n_:>3}{np:10.0f}  {t:<40}{str(args):<30}')  # print
         save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
         layers.append(m_)
+        if i == 0:
+            ch = []
         ch.append(c2)
     return nn.Sequential(*layers), sorted(save)
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--cfg', type=str, default='yolov5s.yaml', help='model.yaml')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-    opt = parser.parse_args()
-    opt.cfg = check_file(opt.cfg)  # check file
-    set_logging()
-    device = select_device(opt.device)
-
-    # Create model
-    model = Model(opt.cfg).to(device)
-    model.train()
-
-    # Profile
-    # img = torch.rand(8 if torch.cuda.is_available() else 1, 3, 640, 640).to(device)
-    # y = model(img, profile=True)
-
-    # Tensorboard
-    # from torch.utils.tensorboard import SummaryWriter
-    # tb_writer = SummaryWriter()
-    # print("Run 'tensorboard --logdir=models/runs' to view tensorboard at http://localhost:6006/")
-    # tb_writer.add_graph(model.model, img)  # add model to tensorboard
-    # tb_writer.add_image('test', img[0], dataformats='CWH')  # add model to tensorboard

@@ -64,19 +64,19 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, augment=False, rank=
         dataset = LoadImagesAndLabels(path, imgsz, batch_size,
                                       augment=augment,  # augment images
                                       hyp=opt.hyp,  # augmentation hyperparameters
-                                      rect=opt.train_cfg['rect'],  # rectangular training
-                                      cache_images=opt.train_cfg['cache_images'],
+                                      rect=opt.train_cfg.get('rect',None),  # rectangular training
+                                      cache_images=opt.train_cfg.get('cache_images',None),
                                       cls_map = opt.data['cls_map'],
-                                      single_cls=opt.train_cfg['single_cls'],
+                                      single_cls=opt.train_cfg.get('single_cls',False),
                                       stride=int(stride),
                                       pad=pad,
                                       rank=rank,
-                                      image_weights=opt.train_cfg['image_weights'],
+                                      image_weights=opt.train_cfg.get('image_weights',None),
                                       version=opt.train_cfg['version'],
                                       debug = opt.train_cfg['debug'])                                      
 
     workers=opt.train_cfg['workers']
-    image_weights=opt.train_cfg['image_weights']
+    image_weights=opt.train_cfg.get('image_weights',None)
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // opt.world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
     sampler = torch.utils.data.distributed.DistributedSampler(dataset) if rank != -1 else None
@@ -350,36 +350,16 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
         self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
-        self.mosaic_border = [-img_size // 2, -img_size // 2]
+        self.mosaic_border = [-img_size[0] // 2, -img_size[1] // 2] if isinstance(img_size,list) else [-img_size // 2, -img_size // 2]
         self.stride = stride
-        self.cls_maps = {}
+        # self.cls_maps = {}
         self.version = version
         self.debug = debug
         # if self.debug:
             
-        for keys,values in cls_map.items():
-            for i in values:
-                self.cls_maps[i] = keys
-
-        # try:
-        #     f = []  # image files
-        #     for p in path if isinstance(path, list) else [path]:
-        #         p = Path(p)  # os-agnostic
-        #         if p.is_dir():  # dir
-        #             f += glob.glob(str(p / '**' / '*.*'), recursive=True)
-        #         elif p.is_file():  # file
-        #             with open(p, 'r') as t:
-        #                 t = t.read().strip().splitlines()
-        #                 parent = str(p.parent) + os.sep
-        #                 f += [x.replace('./', parent) if x.startswith('./') else x for x in t]  # local to global path
-        #         else:
-        #             raise Exception('%s does not exist' % p)
-        #     self.img_files = sorted([x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in img_formats])
-        #     assert self.img_files, 'No images found'
-        # except Exception as e:
-        #     raise Exception('Error loading data from %s: %s\nSee %s' % (path, e, help_url))
-                # Check cache
-        #self.label_files = img2label_paths(self.img_files)  # labels
+        # for keys,values in cls_map.items():
+        #     for i in values:
+        #         self.cls_maps[i] = keys
 
         #assert os.path.exists(path)
         self.image_path = []
@@ -507,13 +487,12 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             #     print(f'WARNING: No labels found in {path}. See {help_url}')
             dic[pid_num] = result
 
-
         manager = multiprocessing.Manager()
         dic = manager.dict()
         num_worker = 2
         one_pid_nums = len(self.label_path) // num_worker
         #jobs = multiprocessing.Process(target=worker,[])#, args=(dic, i, i*2)
-        
+        job = []
         for pid in range(num_worker):
             if pid == num_worker-1:
                 start = one_pid_nums*pid
@@ -522,8 +501,13 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 start = one_pid_nums*pid
                 ends = one_pid_nums*(pid+1)
             jobs = multiprocessing.Process(target=worker,args=(pid,start,ends))
+            job.append(jobs)
             jobs.start()
-            jobs.join()
+
+        for p in job:
+            p.join()
+
+        for pid in range(num_worker):
             nm += dic[pid]['nm']
             nf += dic[pid]['nf']
             ne += dic[pid]['ne']
@@ -566,6 +550,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         else:
             # Load image
             img, (h0, w0), (h, w) = load_image(self, index)
+            img = gaussianblur(img) if random.random() > self.hyp['gaussianblur'] else img
 
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
@@ -661,6 +646,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         return torch.stack(img, 0), torch.cat(label, 0), path, shapes
 
 
+def gaussianblur(img):
+    x = random.choice([(3,3),(5,5),(7,7)])
+    return cv2.GaussianBlur(img, ksize=x, sigmaX=0, sigmaY=0)
+
+
 # Ancillary functions --------------------------------------------------------------------------------------------------
 def load_image(self, index):
     # loads 1 image from dataset, returns img, original hw, resized hw
@@ -670,7 +660,10 @@ def load_image(self, index):
         img = cv2.imread(path)  # BGR
         assert img is not None, 'Image Not Found ' + path
         h0, w0 = img.shape[:2]  # orig hw
-        r = self.img_size / max(h0, w0)  # resize image to img_size
+        if isinstance(self.img_size,list):
+            r = min(self.img_size[0]/h0,self.img_size[1]/w0)
+        else:
+             r = self.img_size / max(h0, w0)  # resize image to img_size
         if r != 1:  # always resize down, only resize up if training with augmentation
             interp = cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR
             img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
@@ -702,47 +695,99 @@ def load_mosaic(self, index):
     # loads images in a mosaic
 
     labels4 = []
-    s = self.img_size
-    yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y
-    indices = [index] + [self.indices[random.randint(0, self.n - 1)] for _ in range(3)]  # 3 additional image indices
-    for i, index in enumerate(indices):
-        # Load image
-        img, _, (h, w) = load_image(self, index)
+    if isinstance(self.img_size,list):
+        sx = self.img_size[1]
+        sy = self.img_size[0]
 
-        # place img in img4
-        if i == 0:  # top left
-            img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
-            x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
-            x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
-        elif i == 1:  # top right
-            x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
-            x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
-        elif i == 2:  # bottom left
-            x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
-            x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(y2a - y1a, h)
-        elif i == 3:  # bottom right
-            x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
-            x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
+        yc = int(random.uniform(-self.mosaic_border[0], 2 * sy + self.mosaic_border[0]))
+        xc = int(random.uniform(-self.mosaic_border[1], 2 * sx + self.mosaic_border[1]))  # mosaic center x, y
+        indices = [index] + [self.indices[random.randint(0, self.n - 1)] for _ in range(3)]  # 3 additional image indices
+        
+        for i, index in enumerate(indices):
+            # Load image
+            img, _, (h, w) = load_image(self, index)
 
-        img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
-        padw = x1a - x1b
-        padh = y1a - y1b
+            # place img in img4
+            if i == 0:  # top left
+                img4 = np.full((sy * 2, sx * 2, img.shape[2]), 127, dtype=np.uint8)  # base image with 4 tiles
+                x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
+            elif i == 1:  # top right
+                x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, sx * 2), yc
+                x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
+            elif i == 2:  # bottom left
+                x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(sy * 2, yc + h)
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(y2a - y1a, h)
+            elif i == 3:  # bottom right
+                x1a, y1a, x2a, y2a = xc, yc, min(xc + w, sx * 2), min(sy * 2, yc + h)
+                x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
 
-        # Labels
-        x = self.labels[index]
-        labels = x.copy()
-        if x.size > 0:  # Normalized xywh to pixel xyxy format
-            labels[:, 1] = w * (x[:, 1] - x[:, 3] / 2) + padw
-            labels[:, 2] = h * (x[:, 2] - x[:, 4] / 2) + padh
-            labels[:, 3] = w * (x[:, 1] + x[:, 3] / 2) + padw
-            labels[:, 4] = h * (x[:, 2] + x[:, 4] / 2) + padh
-        labels4.append(labels)
+            img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+            padw = x1a - x1b
+            padh = y1a - y1b
 
-    # Concat/clip labels
-    if len(labels4):
-        labels4 = np.concatenate(labels4, 0)
-        np.clip(labels4[:, 1:], 0, 2 * s, out=labels4[:, 1:])  # use with random_perspective
-        # img4, labels4 = replicate(img4, labels4)  # replicate
+            # Labels
+            x = self.labels[index]
+            labels = x.copy()
+            if x.size > 0:  # Normalized xywh to pixel xyxy format
+                labels[:, 1] = w * (x[:, 1] - x[:, 3] / 2) + padw
+                labels[:, 2] = h * (x[:, 2] - x[:, 4] / 2) + padh
+                labels[:, 3] = w * (x[:, 1] + x[:, 3] / 2) + padw
+                labels[:, 4] = h * (x[:, 2] + x[:, 4] / 2) + padh
+            labels4.append(labels)
+
+        # Concat/clip labels
+        if len(labels4):
+            labels4 = np.concatenate(labels4, 0)
+            np.clip(labels4[:, 1], 0, 2 * sx, out=labels4[:, 1])
+            np.clip(labels4[:, 2], 0, 2 * sy, out=labels4[:, 2])
+            np.clip(labels4[:, 3], 0, 2 * sx, out=labels4[:, 3])
+            np.clip(labels4[:, 4], 0, 2 * sy, out=labels4[:, 4])
+            #np.clip(labels4[:, 1:], 0, 2 * s, out=labels4[:, 1:])  # use with random_perspective
+            #img4, labels4 = replicate(img4, labels4)  # replicate
+
+    else:
+        s = self.img_size
+        yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y
+        indices = [index] + [self.indices[random.randint(0, self.n - 1)] for _ in range(3)]  # 3 additional image indices
+        for i, index in enumerate(indices):
+            # Load image
+            img, _, (h, w) = load_image(self, index)
+
+            # place img in img4
+            if i == 0:  # top left
+                img4 = np.full((s * 2, s * 2, img.shape[2]), 127, dtype=np.uint8)  # base image with 4 tiles
+                x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
+            elif i == 1:  # top right
+                x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
+                x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
+            elif i == 2:  # bottom left
+                x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
+                x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(y2a - y1a, h)
+            elif i == 3:  # bottom right
+                x1a, y1a, x2a, y2a = xc, yc, min(xc + w, s * 2), min(s * 2, yc + h)
+                x1b, y1b, x2b, y2b = 0, 0, min(w, x2a - x1a), min(y2a - y1a, h)
+
+            img4[y1a:y2a, x1a:x2a] = img[y1b:y2b, x1b:x2b]  # img4[ymin:ymax, xmin:xmax]
+            padw = x1a - x1b
+            padh = y1a - y1b
+
+            # Labels
+            x = self.labels[index]
+            labels = x.copy()
+            if x.size > 0:  # Normalized xywh to pixel xyxy format
+                labels[:, 1] = w * (x[:, 1] - x[:, 3] / 2) + padw
+                labels[:, 2] = h * (x[:, 2] - x[:, 4] / 2) + padh
+                labels[:, 3] = w * (x[:, 1] + x[:, 3] / 2) + padw
+                labels[:, 4] = h * (x[:, 2] + x[:, 4] / 2) + padh
+            labels4.append(labels)
+
+        # Concat/clip labels
+        if len(labels4):
+            labels4 = np.concatenate(labels4, 0)
+            np.clip(labels4[:, 1:], 0, 2 * s, out=labels4[:, 1:])  # use with random_perspective
+            # img4, labels4 = replicate(img4, labels4)  # replicate
 
     # Augment
     img4, labels4 = random_perspective(img4, labels4,
@@ -773,7 +818,7 @@ def replicate(img, labels):
     return img, labels
 
 
-def letterbox(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True):
+def letterbox(img, new_shape=(640, 640), color=(127, 127, 127), auto=True, scaleFill=False, scaleup=True):
     # Resize image to a 32-pixel-multiple rectangle https://github.com/ultralytics/yolov3/issues/232
     shape = img.shape[:2]  # current shape [height, width]
     if isinstance(new_shape, int):

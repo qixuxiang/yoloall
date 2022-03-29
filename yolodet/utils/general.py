@@ -1,18 +1,22 @@
 # General utils
 
+import contextlib
 import glob
 import logging
 import math
 import os
+import signal
 import platform
 import random
 import re
 import subprocess
 import time
 from pathlib import Path
+from subprocess import check_output
 
 import cv2
 import numpy as np
+import pandas as pd
 import torch
 import torchvision
 import yaml
@@ -22,15 +26,31 @@ from yolodet.utils.metrics import fitness
 from yolodet.utils.torch_utils import init_torch_seeds
 
 # Settings
+FILE = Path(__file__).resolve()
+ROOT = FILE.parents[1]  # YOLOv5 root directory
+NUM_THREADS = min(8, max(1, os.cpu_count() - 1))  # number of YOLOv5 multiprocessing threads
+
 torch.set_printoptions(linewidth=320, precision=5, profile='long')
 np.set_printoptions(linewidth=320, formatter={'float_kind': '{:11.5g}'.format})  # format short g, %precision=5
+pd.options.display.max_columns = 10
 cv2.setNumThreads(0)  # prevent OpenCV from multithreading (incompatible with PyTorch DataLoader)
+os.environ['NUMEXPR_MAX_THREADS'] = str(NUM_THREADS)  # NumExpr max threads
 
 
 def set_logging(rank=-1):
     logging.basicConfig(
         format="%(message)s",
         level=logging.INFO if rank in [-1, 0] else logging.WARN)
+        
+# def set_logging(name=None, verbose=True):
+#     # Sets level and returns logger
+#     rank = int(os.getenv('RANK', -1))  # rank in world for Multi-GPU trainings
+#     logging.basicConfig(format="%(message)s", level=logging.INFO if (verbose and rank in (-1, 0)) else logging.WARNING)
+#     return logging.getLogger(name)
+
+
+# LOGGER = set_logging(__name__)  # define globally (used in train.py, val.py, detect.py, etc.)
+
 
 
 def init_seeds(seed=0):
@@ -45,12 +65,12 @@ def get_latest_run(search_dir='.'):
     return max(last_list, key=os.path.getctime) if last_list else ''
 
 
-def check_git_status():
-    # Suggest 'git pull' if repo is out of date
-    if platform.system() in ['Linux', 'Darwin'] and not os.path.isfile('/.dockerenv'):
-        s = subprocess.check_output('if [ -d .git ]; then git fetch && git status -uno; fi', shell=True).decode('utf-8')
-        if 'Your branch is behind' in s:
-            print(s[s.find('Your branch is behind'):s.find('\n\n')] + '\n')
+# def check_git_status():
+#     # Suggest 'git pull' if repo is out of date
+#     if platform.system() in ['Linux', 'Darwin'] and not os.path.isfile('/.dockerenv'):
+#         s = subprocess.check_output('if [ -d .git ]; then git fetch && git status -uno; fi', shell=True).decode('utf-8')
+#         if 'Your branch is behind' in s:
+#             print(s[s.find('Your branch is behind'):s.find('\n\n')] + '\n')
 
 
 def check_img_size(img_size, s=32):
@@ -443,3 +463,151 @@ def increment_path(path, exist_ok=True, sep=''):
         i = [int(m.groups()[0]) for m in matches if m]  # indices
         n = max(i) + 1 if i else 2  # increment number
         return f"{path}{sep}{n}"  # update path
+
+def colorstr(*input):
+    # Colors a string https://en.wikipedia.org/wiki/ANSI_escape_code, i.e.  colorstr('blue', 'hello world')
+    *args, string = input if len(input) > 1 else ('blue', 'bold', input[0])  # color arguments, string
+    colors = {'black': '\033[30m',  # basic colors
+              'red': '\033[31m',
+              'green': '\033[32m',
+              'yellow': '\033[33m',
+              'blue': '\033[34m',
+              'magenta': '\033[35m',
+              'cyan': '\033[36m',
+              'white': '\033[37m',
+              'bright_black': '\033[90m',  # bright colors
+              'bright_red': '\033[91m',
+              'bright_green': '\033[92m',
+              'bright_yellow': '\033[93m',
+              'bright_blue': '\033[94m',
+              'bright_magenta': '\033[95m',
+              'bright_cyan': '\033[96m',
+              'bright_white': '\033[97m',
+              'end': '\033[0m',  # misc
+              'bold': '\033[1m',
+              'underline': '\033[4m'}
+    return ''.join(colors[x] for x in args) + f'{string}' + colors['end']
+
+
+class Timeout(contextlib.ContextDecorator):
+    # Usage: @Timeout(seconds) decorator or 'with Timeout(seconds):' context manager
+    def __init__(self, seconds, *, timeout_msg='', suppress_timeout_errors=True):
+        self.seconds = int(seconds)
+        self.timeout_message = timeout_msg
+        self.suppress = bool(suppress_timeout_errors)
+
+    def _timeout_handler(self, signum, frame):
+        raise TimeoutError(self.timeout_message)
+
+    def __enter__(self):
+        signal.signal(signal.SIGALRM, self._timeout_handler)  # Set handler for SIGALRM
+        signal.alarm(self.seconds)  # start countdown for SIGALRM to be raised
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        signal.alarm(0)  # Cancel SIGALRM if it's scheduled
+        if self.suppress and exc_type is TimeoutError:  # Suppress TimeoutError
+            return True
+
+
+def is_ascii(s=''):
+    # Is string composed of all ASCII (no UTF) characters? (note str().isascii() introduced in python 3.7)
+    s = str(s)  # convert list, tuple, None, etc. to str
+    return len(s.encode().decode('ascii', 'ignore')) == len(s)
+
+
+def is_chinese(s='人工智能'):
+    # Is string composed of any Chinese characters?
+    return re.search('[\u4e00-\u9fff]', s)
+
+
+def try_except(func):
+    # try-except function. Usage: @try_except decorator
+    def handler(*args, **kwargs):
+        try:
+            func(*args, **kwargs)
+        except Exception as e:
+            print(e)
+
+    return handler
+
+
+class WorkingDirectory(contextlib.ContextDecorator):
+    # Usage: @WorkingDirectory(dir) decorator or 'with WorkingDirectory(dir):' context manager
+    def __init__(self, new_dir):
+        self.dir = new_dir  # new dir
+        self.cwd = Path.cwd().resolve()  # current dir
+
+    def __enter__(self):
+        os.chdir(self.dir)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        os.chdir(self.cwd)
+
+
+def is_docker():
+    # Is environment a Docker container?
+    return Path('/workspace').exists()  # or Path('/.dockerenv').exists()
+
+
+def check_online():
+    # Check internet connectivity
+    import socket
+    try:
+        socket.create_connection(("1.1.1.1", 443), 5)  # check host accessibility
+        return True
+    except OSError:
+        return False
+
+
+def emojis(str=''):
+    # Return platform-dependent emoji-safe version of string
+    return str.encode().decode('ascii', 'ignore') if platform.system() == 'Windows' else str
+
+
+def is_writeable(dir, test=False):
+    # Return True if directory has write permissions, test opening a file with write permissions if test=True
+    if test:  # method 1
+        file = Path(dir) / 'tmp.txt'
+        try:
+            with open(file, 'w'):  # open file with write permissions
+                pass
+            file.unlink()  # remove file
+            return True
+        except OSError:
+            return False
+    else:  # method 2
+        return os.access(dir, os.R_OK)  # possible issues on Windows
+
+
+@try_except
+@WorkingDirectory(ROOT)
+def check_git_status():
+    # Recommend 'git pull' if code is out of date
+    msg = ', for updates see https://github.com/ultralytics/yolov5'
+    print(colorstr('github: '), end='')
+    assert Path('.git').exists(), 'skipping check (not a git repository)' + msg
+    assert not is_docker(), 'skipping check (Docker image)' + msg
+    assert check_online(), 'skipping check (offline)' + msg
+
+    cmd = 'git fetch && git config --get remote.origin.url'
+    url = check_output(cmd, shell=True, timeout=5).decode().strip().rstrip('.git')  # git fetch
+    branch = check_output('git rev-parse --abbrev-ref HEAD', shell=True).decode().strip()  # checked out
+    n = int(check_output(f'git rev-list {branch}..origin/master --count', shell=True))  # commits behind
+    if n > 0:
+        s = f"⚠️ YOLOv5 is out of date by {n} commit{'s' * (n > 1)}. Use `git pull` or `git clone {url}` to update."
+    else:
+        s = f'up to date with {url} ✅'
+    print(emojis(s))  # emoji-safe
+
+
+def user_config_dir(dir='Ultralytics', env_var='YOLOV5_CONFIG_DIR'):
+    # Return path of user configuration directory. Prefer environment variable if exists. Make dir if required.
+    env = os.getenv(env_var)
+    if env:
+        path = Path(env)  # use environment variable
+    else:
+        cfg = {'Windows': 'AppData/Roaming', 'Linux': '.config', 'Darwin': 'Library/Application Support'}  # 3 OS dirs
+        path = Path.home() / cfg.get(platform.system(), '')  # OS-specific config dir
+        path = (path if is_writeable(path) else Path('/tmp')) / dir  # GCP and AWS lambda fix, only /tmp is writeable
+    path.mkdir(exist_ok=True)  # make if required
+    return path

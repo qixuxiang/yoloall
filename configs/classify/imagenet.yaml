@@ -1,0 +1,18 @@
+project:          imagenet
+data_dir:
+dataset:          list
+class_map:
+model:            resnet50
+resume:
+num_classes:      1000
+input_size:       224
+crop_pct:         1
+mean:
+std:        
+opt:              sgd
+momentum:         0.9
+weight_decay:     0.00002
+lr:               0.05
+warmup_lr:        0.0001
+epochs:           300
+warmup-epochs:    3

@@ -2,7 +2,7 @@
 
 import torch
 import torch.nn as nn
-
+import numpy as np
 from yolodet.utils.general import bbox_iou
 from yolodet.utils.torch_utils import is_parallel
 from yolodet.loss.yolov5_loss import compute_loss_v5
@@ -14,17 +14,19 @@ from yolodet.loss.mmdet_loss import YOLOV3Head
 
 class ComputeLoss:
     # Compute losses
-    def __init__(self, model, autobalance=False):
+    def __init__(self, model, opt, autobalance=False):
         super(ComputeLoss, self).__init__()
         device = next(model.parameters()).device  # get model device
         self.hyp = model.hyp  # hyperparameters
-        self.version = model.version
+        self.version = opt.train_cfg['version']
         self.model = model
-        self.add = False
-        self.stride = [8,16,32]
-
-        det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
-
+        # self.add = False
+        try:
+            det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
+        except:
+            det = model.module.model.detect if is_parallel(model) else model.model.detect  # Detect() module
+        #self.stride = list(np.array(det.stride))
+        self.show_pos_img = opt.yolommdet['show_pos_bbox']
         self.nc = det.nc
         self.na = det.na
         self.anchors = det.anchors
@@ -51,14 +53,22 @@ class ComputeLoss:
         elif self.version == 'mmdet':
             self.head_loss = YOLOV3Head(
                 num_classes = self.nc,
-                anchor_generator = [[(10, 13), (16, 30), (33, 23)],
-                                    [(30, 61), (62, 45), (59, 119)],
-                                    [(116, 90), (156, 198), (373, 326)]],
-                # [[(116, 90), (156, 198), (373, 326)],
-                #                  [(30, 61), (62, 45), (59, 119)],
-                #                  [(10, 13), (16, 30), (33, 23)]],#self.anchors,
-                featmap_strides = self.stride,
-                add = self.add,
+                anchor_generator = [i.reshape(-1,2).tolist() for i in np.array(opt.train_cfg['anchors'])], 
+                featmap_strides = list(np.array(det.stride)),
+                add = not opt.yolommdet['loss_mean'],
+                box_loss_type = opt.yolommdet['box_loss_type'],
+                show_pos_img = opt.yolommdet['show_pos_bbox'],
+                loss_cls_weight = opt.yolommdet['loss_cls_weight'],
+                loss_conf_weight = opt.yolommdet['loss_conf_weight'],
+                loss_xy_weight = opt.yolommdet['loss_xy_weight'],
+                loss_wh_weight = opt.yolommdet['loss_wh_weight'],
+                loss_reduction = opt.yolommdet['loss_reduction'],
+                pos_iou_thr = opt.yolommdet['pos_iou_thr'],
+                neg_iou_thr = opt.yolommdet['neg_iou_thr'],
+                area_scale = opt.yolommdet['area_scale'],
+                obj_scale = opt.yolommdet['mmdet_obj_scale'],
+                noobj_scale = opt.yolommdet['mmdet_noobj_scale'],
+                loss_iou_weight = opt.yolommdet['loss_iou_weight'],
             )
         else:
             print('not sport')
