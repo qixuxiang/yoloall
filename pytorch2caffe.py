@@ -15,7 +15,7 @@ import pdb
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--task','-t', type=str, default='od', help='od')
-    parser.add_argument('--cfg','-c',type=str,default='config/base.yaml')
+    parser.add_argument('--cfg','-c',type=str,default='configs/base.yaml')
     parser.add_argument('--merge_bn',type=int,default=1)
     parser.add_argument('--weight', '-w', type=str, default='null.pth', help='weight path')
     parser.add_argument('--simple_name', type=int, default=1)

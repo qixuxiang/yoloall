@@ -1,1 +1,0 @@
-     epoch       mem      item       box       obj       cls     total   targets        lr  img_size        mp        mr     map50       map       box       obj       cls

@@ -4,6 +4,12 @@ run/*
 *.pt
 *.pth
 *.cache
+*.ipynb
 val_data.txt
 *.caffemodel
 *.prototxt
+/runs/
+/run_det/
+/run_cls/
+/.vscode/
+
