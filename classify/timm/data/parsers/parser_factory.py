@@ -3,7 +3,7 @@ import os
 from .parser_image_folder import ParserImageFolder
 from .parser_image_tar import ParserImageTar
 from .parser_image_in_tar import ParserImageInTar
-
+from .parser_image_txt import ParserImageTxt
 
 def create_parser(name, root, split='train', **kwargs):
     name = name.lower()
@@ -24,6 +24,8 @@ def create_parser(name, root, split='train', **kwargs):
         # FIXME support split here, in parser?
         if os.path.isfile(root) and os.path.splitext(root)[1] == '.tar':
             parser = ParserImageInTar(root, **kwargs)
+        elif root.endswith('.txt'):
+            parser = ParserImageTxt(root, **kwargs)
         else:
             parser = ParserImageFolder(root, **kwargs)
     return parser

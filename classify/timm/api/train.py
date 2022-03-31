@@ -20,7 +20,7 @@ import logging
 from collections import OrderedDict
 from contextlib import suppress
 from datetime import datetime
-
+import yaml
 import torch
 import torch.nn as nn
 import torchvision.utils
@@ -236,15 +236,18 @@ def train(args):
     if args.local_rank == 0:
         _logger.info('Scheduled epochs: {}'.format(num_epochs))
 
+    train_data = args.data_dir if isinstance(args.data_dir, str) else args.data_dir['train']
+    test_data =  args.data_dir if isinstance(args.data_dir, str) else args.data_dir['test']
+
     # create the train and eval datasets
     dataset_train = create_dataset(
-        args.dataset, root=args.data_dir, split=args.train_split, is_training=True,
+        args.dataset, root=train_data, split=args.train_split, is_training=True,
         class_map=args.class_map,
         download=args.dataset_download,
         batch_size=args.batch_size,
         repeats=args.epoch_repeats)
     dataset_eval = create_dataset(
-        args.dataset, root=args.data_dir, split=args.val_split, is_training=False,
+        args.dataset, root=test_data, split=args.val_split, is_training=False,
         class_map=args.class_map,
         download=args.dataset_download,
         batch_size=args.batch_size)
@@ -352,13 +355,14 @@ def train(args):
                 safe_model_name(args.model),
                 str(data_config['input_size'][-1])
             ])
-        output_dir = get_outdir(args.output if args.output else './output/train', exp_name)
+        output_dir = get_outdir(os.path.join(args.output,args.project) if args.output else './output/train', exp_name)
         decreasing = True if eval_metric == 'loss' else False
         saver = CheckpointSaver(
             model=model, optimizer=optimizer, args=args, model_ema=model_ema, amp_scaler=loss_scaler,
             checkpoint_dir=output_dir, recovery_dir=output_dir, decreasing=decreasing, max_history=args.checkpoint_hist)
         with open(os.path.join(output_dir, 'args.yaml'), 'w') as f:
-            f.write(args_text)
+            yaml.dump(vars(args), f, sort_keys=False)
+
 
     try:
         for epoch in range(start_epoch, num_epochs):

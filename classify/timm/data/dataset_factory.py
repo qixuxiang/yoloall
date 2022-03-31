@@ -89,7 +89,7 @@ def create_dataset(
     Returns:
         Dataset object
     """
-    name = name.lower()
+    name = name.lower() if name != None else name
     if name.startswith('torch/'):
         name = name.split('/', 2)[-1]
         torch_kwargs = dict(root=root, download=download, **kwargs)

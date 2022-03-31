@@ -8,7 +8,7 @@ def init_hparams():
     # The first arg parser parses out only the --config argument, this argument is used to
     # load a yaml file containing key-values that override the defaults for the main parser below
     config_parser = parser = argparse.ArgumentParser(description='Training Config', add_help=False)
-    parser.add_argument('-c', '--config', default='configs/classify/imagenet.yaml', type=str, metavar='FILE',
+    parser.add_argument('-c', '--config', default='configs/classify/test.yaml', type=str, metavar='FILE',
                         help='YAML config file specifying default arguments')
 
 

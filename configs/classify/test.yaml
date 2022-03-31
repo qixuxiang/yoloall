@@ -1,14 +1,19 @@
-project:          imagenet
-data_dir:         
-dataset:          DCL
+project:          plant
+data_dir: 
+    train:        /home/yu/data/kaggle_data/cvpr2020-plant-pathology-master/data/train.txt
+    test:         /home/yu/data/kaggle_data/cvpr2020-plant-pathology-master/data/test.txt 
+dataset:          list
 class_map:
-    cat:  0
-    dog:  1
-model:            resnet50
+    healthy':           0 
+    multiple_diseases:  1
+    rust:               2 
+    scab:               3
+model:            torch_test
 resume:
-num_classes:      1000
+num_classes:      4
 input_size:       [3,224,224]
 crop_pct:         1
+batch_size:       4
 mean:
 std:        
 opt:              sgd

@@ -63,14 +63,17 @@ def create_model(
         # load model weights + pretrained_cfg from Hugging Face hub.
         pretrained_cfg, model_name = load_model_config_from_hf(model_name)
 
-    if not is_model(model_name):
-        raise RuntimeError('Unknown model (%s)' % model_name)
+    if is_model(model_name):
 
-    create_fn = model_entrypoint(model_name)
-    with set_layer_config(scriptable=scriptable, exportable=exportable, no_jit=no_jit):
-        model = create_fn(pretrained=pretrained, pretrained_cfg=pretrained_cfg, **kwargs)
+        create_fn = model_entrypoint(model_name)
+        with set_layer_config(scriptable=scriptable, exportable=exportable, no_jit=no_jit):
+            model = create_fn(pretrained=pretrained, pretrained_cfg=pretrained_cfg, **kwargs)
 
-    if checkpoint_path:
-        load_checkpoint(model, checkpoint_path)
+        if checkpoint_path:
+            load_checkpoint(model, checkpoint_path)
+    else:
+        print("Loading model from torch_models...")
+        exec(f"from timm.models.torch_models.{model_name} import Model")
+        model = eval("Model")(num_classes = kwargs.get('num_classes',1000))
 
     return model
