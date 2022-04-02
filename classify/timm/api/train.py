@@ -59,11 +59,22 @@ except ImportError:
 torch.backends.cudnn.benchmark = True
 _logger = logging.getLogger('train')
 
+def show_opts(args):
+    _logger.info("\nargs params:")
+    for arg in vars(args):
+        attr = getattr(args,arg)
+        if isinstance(attr,dict):
+            _logger.info('- {}:'.format(arg))
+            for key in attr:
+                _logger.info('   # {:20}: {}'.format(key, attr[key]))
+        else:
+            _logger.info('- {:20}: {}'.format(arg, attr))
+
 
 def train(args):
     # setup_default_logging()
     # args, args_text = _parse_args()
-    
+    show_opts(args)
     if args.log_wandb:
         if has_wandb:
             wandb.init(project=args.experiment, config=args)
@@ -123,7 +134,8 @@ def train(args):
         bn_momentum=args.bn_momentum,
         bn_eps=args.bn_eps,
         scriptable=args.torchscript,
-        checkpoint_path=args.initial_checkpoint)
+        checkpoint_path=args.initial_checkpoint,
+        model_cfg=args.model_cfg)
     if args.num_classes is None:
         assert hasattr(model, 'num_classes'), 'Model must have `num_classes` attr if not set on cmd line/config.'
         args.num_classes = model.num_classes  # FIXME handle model default vs config num_classes more elegantly
@@ -580,5 +592,5 @@ def validate(model, loader, loss_fn, args, amp_autocast=suppress, log_suffix='')
     return metrics
 
 
-if __name__ == '__main__':
-    main()
+# if __name__ == '__main__':
+#     main()

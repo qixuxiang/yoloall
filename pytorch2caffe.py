@@ -14,8 +14,8 @@ import pdb
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--task','-t', type=str, default='od', help='od')
-    parser.add_argument('--cfg','-c',type=str,default='configs/base.yaml')
+    parser.add_argument('--task','-t', type=str, default='oc', help='od, oc')
+    parser.add_argument('--cfg','-c',type=str,default='configs/classify/test.yaml')
     parser.add_argument('--merge_bn',type=int,default=1)
     parser.add_argument('--weight', '-w', type=str, default='null.pth', help='weight path')
     parser.add_argument('--simple_name', type=int, default=1)
@@ -48,24 +48,20 @@ def get_args():
             parser.set_defaults(**cfg)
     args = parser.parse_args()
     assert args.cfg, f"config in null or weight is null"
-    if hasattr(args, 'multi_data_and_head') and args.multi_data_and_head['enable']:
-        pass
-    else:
-        if 'name_conf_cls_map' in args.data:
-            nc = args.data['nc']
-            name_conf_cls_map = args.data['name_conf_cls_map']
-            assert len(name_conf_cls_map) == nc, "name_conf_cls_map is wrong"
-            args.data['name'] = [name_conf_cls_map[i][0] for i in range(nc)]
-            args.data['conf_thres'] = [name_conf_cls_map[i][1] for i in range(nc)]
-            args.data['cls_map'] = [name_conf_cls_map[i][2] for i in range(nc)]
+    if args.task == 'od':
+        if hasattr(args, 'multi_data_and_head') and args.multi_data_and_head['enable']:
+            pass
+        else:
+            if 'name_conf_cls_map' in args.data:
+                nc = args.data['nc']
+                name_conf_cls_map = args.data['name_conf_cls_map']
+                assert len(name_conf_cls_map) == nc, "name_conf_cls_map is wrong"
+                args.data['name'] = [name_conf_cls_map[i][0] for i in range(nc)]
+                args.data['conf_thres'] = [name_conf_cls_map[i][1] for i in range(nc)]
+                args.data['cls_map'] = [name_conf_cls_map[i][2] for i in range(nc)]
     return args
 
-def cfg_2_opt(args, weight_name=None):
-    pass
-
-if __name__ == "__main__":
-    args = get_args()
-
+def trans_od(args):
     #create torch model
     version     = args.train_cfg['version']
     model       = args.train_cfg['model']
@@ -139,6 +135,57 @@ if __name__ == "__main__":
     os.system('mv {} {}'.format(prototxt, prototxt_nnx))
     os.system('mv {} {}'.format(caffemodel, caffemodel_nnx)) 
     
+
+def trans_oc(args):
+   #create torch model
+    model       = args.model
+    model_cfg   = args.model_cfg
+    num_classes = args.num_classes
+    height      = args.input_size[1]
+    width       = args.input_size[2]
+    input_size = (1,3,height,width)
+    print(f">> input_size:{input_size}\n")
+    kwargs = {}
+    kwargs['model_name'] = model
+    kwargs['model_cfg'] = model_cfg
+    kwargs['num_classes'] = num_classes
+
+    #model set
+    print('')
+    from classify.timm.models.torch_model import Model
+    logger.info('Loading model classify.timm.models.torch_model import Model')
+    model = Model(kwargs) #如果在torch时进行bn融合就进行model.fuse()
+
+    model.eval()
+    print()
+
+    prototxt, caffemodel, output_blobs = trans_net(model, input_size, ckpt=args.weight, merage_bn=args.merge_bn,
+                                                  out_blob_pre='', draw=args.draw)
+    
+    #to nnx json
+
+    if args.platform:
+        pass
+    else:
+        prototxt_nnx = f'./caffemodel/{args.nnx_name}.prototxt'
+        caffemodel_nnx = f'./caffemodel/{args.nnx_name}.caffemodel'
+
+    os.system('mv {} {}'.format(prototxt, prototxt_nnx))
+    os.system('mv {} {}'.format(caffemodel, caffemodel_nnx)) 
+
+
+
+def cfg_2_opt(args, weight_name=None):
+    pass
+
+if __name__ == "__main__":
+    args = get_args()
+    if args.task == "od":
+        trans_od(args)
+    else:
+        trans_oc(args)
+
+
 
 
 

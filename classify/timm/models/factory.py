@@ -5,6 +5,7 @@ from .registry import is_model, is_model_in_modules, model_entrypoint
 from .helpers import load_checkpoint
 from .layers import set_layer_config
 from .hub import load_model_config_from_hf
+from .torch_model import Model
 
 
 def parse_model_name(model_name):
@@ -73,7 +74,8 @@ def create_model(
             load_checkpoint(model, checkpoint_path)
     else:
         print("Loading model from torch_models...")
-        exec(f"from timm.models.torch_models.{model_name} import Model")
-        model = eval("Model")(num_classes = kwargs.get('num_classes',1000))
+        kwargs['model_name'] = model_name
+        kwargs['pretrained'] = pretrained
+        model = Model(kwargs)
 
     return model

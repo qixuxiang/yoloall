@@ -557,13 +557,14 @@ class Model(nn.Module):
         p_out0 = p_out0 + fpn_out0
         pan_out0 = self.FPN3(p_out0)
 
-        pool = self.pooling(pan_out0).view(pan_out0.shape[0],-1)
+        pool = self.pooling(pan_out0)
+        pool = pool.view(pan_out0.shape[0],-1)
         
-        fc = self.fc(nn.Flatten(pool))
+        fc = self.fc(pool)
         return fc
 
 if __name__ == '__main__':
     x = torch.rand([1,3,224,224])
     model = Model()
-    model(x)
+    model(x).shape
 
