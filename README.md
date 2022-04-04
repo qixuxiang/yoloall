@@ -102,7 +102,11 @@ YOLOALL-PyTorch不仅是YOLO系列算法的目标检测的集合，同样也在�
   | conv_transpose2d    |                  |                  |                       |
   | interpolate         |                  |                  |                       |
 
+  ![pytoch转单个检测caffe模型](https://github.com/yuzhengfa/yoloall/blob/main/convert/od.PNG)
   
+  ![pytoch转多个检测caffe模型](https://github.com/yuzhengfa/yoloall/blob/main/convert/multi_od.PNG)
+  
+  [pytoch转单个识别caffe模型](https://github.com/yuzhengfa/yoloall/blob/main/convert/oc.PNG)
 
 # 参考
 
