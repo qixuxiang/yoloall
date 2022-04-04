@@ -6,7 +6,8 @@ from yolodet.utils.general import bbox_iou
 from yolodet.utils.torch_utils import is_parallel
 #detection
 from yolodet.loss.yolov5_loss import compute_loss_v5
-from yolodet.loss.yolo3_loss import compute_loss_v3
+from yolodet.loss.yolov3_loss import compute_loss_v3
+from yolodet.loss.yolov4_loss import compute_loss_v4
 from yolodet.loss.gaussian_loss_utils import compute_gaussian_yolo_loss
 from yolodet.loss.darknet_loss import compute_loss_darknet
 # from yolodet.loss.yolov4_loss import build_targets_v4
@@ -89,7 +90,7 @@ class ComputeLoss:
         # self.nl         = det.nl
         # self.stride     = list(det.stride)
 
-        # if self.version in ['v3','v5','gaussian_v3']:
+        # if self.version in ['yolov3','yolov5','yolov3-gaussian']:
 
         #     # Define criteria
         #     BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([self.hyp['cls_pw']], device=device))
@@ -304,11 +305,13 @@ class ComputeLoss:
 
     def __call__(self, p, targets, img_metas=None, imgs=None, feature=None, head_index=None):  # predictions, targets, model
 
-        if self.version == 'v5':
+        if self.version == 'yolov5':
             return compute_loss_v5(self,p,targets)
-        elif self.version == 'v3':
+        elif self.version == 'yolov3':
             return compute_loss_v3(self,p,targets)
-        elif self.version == 'gaussian_v3':
+        elif self.version == 'yolov4':
+            return compute_loss_v4(self,p,targets)
+        elif self.version == 'yolov3-gaussian':
             return compute_gaussian_yolo_loss(self,p,targets,imgs)
         elif self.version == 'darknet':
             return compute_loss_darknet(self,p,targets)

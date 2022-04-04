@@ -13,7 +13,7 @@ train_cfg: # train base params
     freeze:           []
     quantize:         false
 
-    version:          yolo-gfl-mmdet #yolo-gfl-mmdet #yolo-fcos-mmdet #yolo-center-mmdet #yolo-atss-yzf-mmdet #gaussian_v3 # v3 / v5 / v4 / yolo-mmdet / yolof-mmdet / yolox-mmdet / yolox-yzf-mmdet / yolo-atss-mmdet / yolo-atss-yzf-mmdet
+    version:          yolo-gfl-mmdet #yolo-gfl-mmdet #yolo-fcos-mmdet #yolo-center-mmdet #yolo-atss-yzf-mmdet #yolov3-gaussian # yolov3 / yolov5 / yolov4 / yolo-mmdet / yolof-mmdet / yolox-mmdet / yolox-yzf-mmdet / yolo-atss-mmdet / yolo-atss-yzf-mmdet
     anchors:          [[8,8], [16,16], [32, 32]]
     #[[17,8,  10,14,  26,12,  16,23,  49,15],[31,25,  26,43,  59,27,  46,58,  107,31],[76,51,  138,57,  98,90,  203,82,  411,127]]
     #[[11,11,  26,10,  19,21,  41,17,  26,37], [68,23,  42,41,  74,36,  54,66,  124,39], [85,86,  151,65,  198,102,  297,82,  280,208]]

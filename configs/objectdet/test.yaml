@@ -12,15 +12,15 @@ train_cfg: # train base params
     freeze:           []
     quantize:         false
 
-    version:          yolo-mmdet #yolo-gfl-mmdet #yolo-center-mmdet #yolo-fcos-mmdet #yolo-atss-yzf-mmdet #gaussian_v3 # v3 / v5 / v4 / yolo-mmdet / yolof-mmdet / yolox-mmdet / yolox-yzf-mmdet / yolo-atss-mmdet / yolo-atss-yzf-mmdet
+    version:          yolov3 #yolo-gfl-mmdet #yolo-center-mmdet #yolo-fcos-mmdet #yolo-atss-yzf-mmdet / yolo-mmdet / yolof-mmdet / yolox-mmdet / yolox-yzf-mmdet / yolo-atss-mmdet / yolo-atss-yzf-mmdet
     anchors:          [[17,8,  10,14,  26,12,  16,23,  49,15],[31,25,  26,43,  59,27,  46,58,  107,31],[76,51,  138,57,  98,90,  203,82,  411,127]]
     #[[8,8], [16,16], [32, 32]]  #[[11,11, 19,21, 26,37], [68,23, 74,36, 124,39], [85,86, 198,102, 280,208]] #[[11,11,  26,10,  19,21,  41,17,  26,37], [68,23,  42,41,  74,36,  54,66,  124,39], [85,86,  151,65,  198,102,  297,82,  280,208]]
     #yolo-center-mmdet -> poly_test <Object as point>
     #yolox-mmdet, yolo-fcos-mmdet, yolo-gfl-mmdet: [[8,8], [16,16], [32, 32]] 
     #yolof, poly_yolo: [[11,11, 26,37, 74,36, 124,39, 198,102, 280,208]] #单层输出 区别：yolof用深层特征、poly_yolo用特征图最大特征
 
-    width:            960
-    height:           576
+    width:            640
+    height:           640
     multi_scale:      false
     quad:             false
 

@@ -233,7 +233,7 @@ def train_transformer(opt, device, tb_writer=None):
         logger.info(f"Scaled mmdet max_norm = {max_norm}")
         logger.info(f"Scaled mmdet max_norm = {max_one_norm}")
     # yolov3/yolov5 opitimizer参数
-    if loss_version in ['v3','v5']:
+    if loss_version in ['yolov3','yolov5']:
         if opt.yolov3v5['loss_mean']:
             opt.yolov3v5['box'] *= 3 / nl  # scale to layers
             opt.yolov3v5['cls'] *= nc / 80 * 3 / nl  # scale to classes and layers
@@ -305,7 +305,7 @@ def train_transformer(opt, device, tb_writer=None):
     model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights 待考虑
     model.names = names
-    if loss_version in ['v3','v5']:
+    if loss_version in ['yolov3','yolov5']:
         model.hyp = {**opt.hyp, **opt.yolov3v5}  # attach hyperparameters to model
     else:
         model.hyp = opt.hyp  # attach hyperparameters to model

@@ -106,7 +106,9 @@ YOLOALL-PyTorch不仅是YOLO系列算法的目标检测的集合，同样也在�
 
 # 参考
 
-略
+- https://github.com/ultralytics/yolov5
+- https://github.com/open-mmlab/mmdetection
+- https://github.com/rwightman/pytorch-image-models
 
 
 

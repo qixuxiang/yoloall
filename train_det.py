@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config','-c', type=str, default='configs/objectdet/test_multi_head.yaml', help='config file path')
+    parser.add_argument('--config','-c', type=str, default='configs/objectdet/base.yaml', help='config file path')
     parser.add_argument('--local_rank', type=int, default=-1, help='DDP parameter, do not modify')
     #opt = parser.parse_args()
     parser_, remaining = parser.parse_known_args()

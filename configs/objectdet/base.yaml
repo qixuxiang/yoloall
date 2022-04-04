@@ -6,19 +6,20 @@ save_dir:
 
 train_cfg:
     project:            coco_test
-    model:              yzf_csp #wp_base #
-    weight:             
+    model:              torch_wp_base #wp_base #
+    weights_one:             
     weight_two:         
     freeze:             []
-    version:            mmdet
+    quantize:           false
+    version:            yolov3-gaussian #yolov5 #yolov4 #yolov3 #yolov3-gaussian
     anchors:            [[10,13, 16,30, 33,23],[30,61, 62,45, 59,119],[116,90, 156,198, 373,326]]
-    width:              960
-    height:             576
+    width:              640
+    height:             640
     multi_scale:        false
     quad:               false
 
     epochs:             300
-    batch_size:         2
+    batch_size:         8
     nbs:                64
     total_batch_size:   
     workers:            1
@@ -38,6 +39,15 @@ two_stage:
     feat_channels:      256
     loss_mean:          true
     start:              3
+
+transformer:
+    transformer_enabl:  0
+
+distiller:
+    distill_enable:     0           
+
+multi_head:
+    multi_head_enable:  0
 
 data:
     train:              /home/yu/data/dataset/coco/val_label.txt
@@ -162,6 +172,8 @@ yolov3v5:
     objness_iou_ratio:  0.0
     warmup_bias_lr:     0.1
 
+yolov3gaussian:
+
 yolov4:
     use_all_anchors:    false
     object_scale:       1.0
@@ -197,7 +209,7 @@ hyp:
     scale:              0.5
     shear:              0.0
     perspective:        0.0
-    flipup:             0.0
+    flipud:             0.0
     fliplr:             0.2
     mosaic:             0.0
     mixup:              0.0

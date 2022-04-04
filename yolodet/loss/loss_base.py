@@ -7,7 +7,8 @@ from yolodet.utils.general import bbox_iou
 from yolodet.utils.torch_utils import is_parallel
 #detection
 from yolodet.loss.yolov5_loss import compute_loss_v5
-from yolodet.loss.yolo3_loss import compute_loss_v3
+from yolodet.loss.yolov3_loss import compute_loss_v3
+from yolodet.loss.yolov4_loss import compute_loss_v4
 from yolodet.loss.gaussian_loss_utils import compute_gaussian_yolo_loss
 from yolodet.loss.darknet_loss import compute_loss_darknet
 # from yolodet.loss.yolov4_loss import build_targets_v4
@@ -50,7 +51,7 @@ class ComputeLoss:
         self.nl         = det.nl
         self.stride     = list(det.stride)
 
-        if self.version in ['v3','v5','gaussian_v3']:
+        if self.version in ['yolov3','yolov5','yolov3-gaussian']:
 
             # Define criteria
             BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([self.hyp['cls_pw']], device=device))
@@ -67,6 +68,68 @@ class ComputeLoss:
             self.ssi = list(det.stride).index(16) if autobalance else 0  # stride 16 index
             # for k in 'na', 'nc', 'nl', 'anchors':
             #     setattr(self, k, getattr(det, k))
+        elif self.version == 'yolov4':
+            anchors = []
+            [anchors.extend(ans) for ans in opt.train_cfg['anchors']]
+            anchors = np.array(anchors).reshape(-1,2).tolist()
+            anchors_mask = []
+
+            ans_index = 0
+            for n, ans in enumerate(opt.train_cfg['anchors']):
+                anchors_mask.append([])
+                for an in ans[::2]:
+                    anchors_mask[n].append(ans_index)
+                    ans_index += 1
+            
+            # logger.info("yolov4 anchors >>>")
+            # logger.info(anchors)
+            # logger.info("yolov4 anchors_mask >>>")
+            # logger.info(anchors_mask)
+
+            # img size
+            self.net_w, self.net_h = opt.train_cfg['width'], opt.train_cfg['height']
+            # class
+            self.num_classes  = self.nc
+            # anchors
+            self.anchors_org  = anchors
+            self.scaled_anchors_org = [(1.0 * a_w / self.net_w, 1.0 * a_h / self.net_h) for a_w, a_h in self.anchors_org]
+            self.anchors_masks = anchors_mask
+            # stride
+            self.layer_stride = det.stride.int().numpy().tolist()
+            # use match anchor not only best match
+            self.use_all_anchors = opt.yolov4['use_all_anchors']
+
+            # weight scale
+            self.object_scale    = opt.yolov4['object_scale']
+            self.noobject_scale  = opt.yolov4['noobject_scale']
+            self.class_scale     = opt.yolov4['class_scale']
+            self.coord_scale     = opt.yolov4['coord_scale']
+
+            # delta params
+            self.cls_normalizer   = opt.yolov4['cls_normalizer']
+            self.iou_normalizer   = opt.yolov4['iou_normalizer']
+            self.ignore_thresh    = opt.yolov4['ignore_thresh']
+            self.iou_thresh       = opt.yolov4['iou_thresh']
+            self.label_smooth_eps = opt.yolov4['label_smooth_eps']
+            self.y_true = 1.0 -  0.5 * self.label_smooth_eps
+            self.y_false = 0.5 * self.label_smooth_eps
+
+            # loss func
+            # self.bce_loss = nn.BCELoss(reduce=False)
+            self.bce_loss = nn.BCEWithLogitsLoss(reduction='none')
+            if opt.yolov4['focalloss']:
+                self.bce_loss = FocalLoss(self.bce_loss)
+
+            self.box_loss_type = opt.yolov4['box_loss_type']
+            if self.box_loss_type == 'mse':
+                self.box_loss_func = nn.MSELoss(reduction='none')#(reduce=False)
+
+            elif self.box_loss_type == 'smooth':
+                self.box_loss_func = nn.SmoothL1Loss(reduction='none')#(reduce=False)
+
+            elif 'iou' in self.box_loss_type:
+                self.box_loss_func = None
+        
         elif self.version == 'yolo-mmdet':#
             self.head_loss = YOLOV3Head(
                 num_classes = self.nc,
@@ -265,11 +328,13 @@ class ComputeLoss:
 
     def __call__(self, p, targets, img_metas=None, imgs=None, feature=None):  # predictions, targets, model
 
-        if self.version == 'v5':
+        if self.version == 'yolov5':
             return compute_loss_v5(self,p,targets)
-        elif self.version == 'v3':
+        elif self.version == 'yolov3':
             return compute_loss_v3(self,p,targets)
-        elif self.version == 'gaussian_v3':
+        elif self.version == 'yolov4':
+            return compute_loss_v4(self,p,targets)            
+        elif self.version == 'yolov3-gaussian':
             return compute_gaussian_yolo_loss(self,p,targets,imgs)
         elif self.version == 'darknet':
             return compute_loss_darknet(self,p,targets)

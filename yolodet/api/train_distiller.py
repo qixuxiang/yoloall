@@ -362,7 +362,7 @@ def train_distiller(opt, device, tb_writer=None):
         logger.info(f"Scaled mmdet max_norm = {max_norm}")
         logger.info(f"Scaled mmdet max_norm = {max_one_norm}")
     # yolov3/yolov5 opitimizer参数
-    if loss_version in ['v3','v5']:
+    if loss_version in ['yolov3','yolov5']:
         if opt.yolov3v5['loss_mean']:
             opt.yolov3v5['box'] *= 3 / nl  # scale to layers
             opt.yolov3v5['cls'] *= nc / 80 * 3 / nl  # scale to classes and layers
@@ -429,7 +429,7 @@ def train_distiller(opt, device, tb_writer=None):
     model.names = names
     model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights 待考虑
-    if loss_version in ['v3','v5','gaussian_v3']:
+    if loss_version in ['yolov3','yolov5','yolov3-gaussian']:
         model.hyp = {**opt.hyp, **opt.yolov3v5}  # attach hyperparameters to model
     else:
         model.hyp = opt.hyp  # attach hyperparameters to model
@@ -541,7 +541,7 @@ def train_distiller(opt, device, tb_writer=None):
                 mem = '%.3g' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
                 if 'mmdet' in loss_version:
                     targets_num = int(sum([temp.shape[0] for temp in targets[1]]))
-                elif 'gaussian_v3' in loss_version:
+                elif 'yolov3-gaussian' in loss_version:
                     targets_num = targets[-1].shape[0]
                 else:
                     targets_num = targets.shape[0]
@@ -591,7 +591,7 @@ def train_distiller(opt, device, tb_writer=None):
                             img_num += 1
                         targets = torch.cat(targets_total)
                         targets = torch.cat((targets[:,:2],xyxy2xywh(targets[:,2:]/torch.Tensor([imgsz[1],imgsz[0],imgsz[1],imgsz[0]]))),1)#.to(device)
-                    elif 'gaussian_v3' in loss_version:
+                    elif 'yolov3-gaussian' in loss_version:
                         targets = targets[-1]
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
                     Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()

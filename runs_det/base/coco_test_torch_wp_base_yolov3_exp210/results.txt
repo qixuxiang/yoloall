@@ -1,0 +1,2 @@
+     epoch       mem     iterm       box       obj       cls     total   targets        lr  img_size        mp        mr     map50       map       box       obj       cls
+     0/299      2.19   625/625   0.01471     1.352    0.7126     2.079        63 0.0003328       640         0         0         0         0         0         0         0

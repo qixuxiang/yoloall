@@ -68,7 +68,7 @@ class Model(nn.Module):
         else:
             m.coupling_init_detect_layers()
         #获取stride
-        if isinstance(m, Detect) or m.version in ['gaussian_v3']:
+        if isinstance(m, Detect) or m.version in ['yolov3-gaussian']:
             s = 256  # 2x min stride
             m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
             m.anchors /= m.stride.view(-1, 1, 1)

@@ -89,7 +89,7 @@ class Detect(nn.Module):
         self.export = False  # onnx export
         self.stride = None  # strides computed during build
 
-        self.version = 'v3'
+        self.version = 'yolov3'
 
         self.two_stage = False
         self.nnx_enable = nnx_enable
@@ -181,12 +181,12 @@ class Detect(nn.Module):
                     
                     if self.grid[i].shape[2:4] != x_new_i.shape[2:4]:
                         self.grid[i] = self._make_grid(nx, ny).to(x_new_i.device)
-                    if self.version == 'v5':
+                    if self.version == 'yolov5':
                         y = x_new_i.sigmoid()
                         y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i].to(x_new_i.device)) * self.stride[i]  # xy
                         y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
 
-                    elif self.version in ['v3','v4', 'mmdet', 'vid-yolo-mmdet']:
+                    elif self.version in ['yolov3','yolov4', 'mmdet', 'vid-yolo-mmdet']:
                         y = x_new_i
                         y[..., 0:2] =  (y[..., 0:2].sigmoid() + self.grid[i].to(x_new_i.device)) * self.stride[i]  # xy
                         y[..., 2:4] = y[..., 2:4].exp() * self.anchor_grid[i]  # wh
@@ -200,12 +200,12 @@ class Detect(nn.Module):
                 if not self.training:  # inference
                     if self.grid[i].shape[2:4] != x_new[i].shape[2:4]:
                         self.grid[i] = self._make_grid(nx, ny).to(x_new[i].device)
-                    if self.version == 'v5':
+                    if self.version == 'yolov5':
                         y = x_new[i].sigmoid()
                         y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i].to(x_new[i].device)) * self.stride[i]  # xy
                         y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
 
-                    elif self.version in ['v3','v4', 'mmdet', 'vid-yolo-mmdet']:
+                    elif self.version in ['yolov3','yolov4', 'mmdet', 'vid-yolo-mmdet']:
                         y = x_new[i]
                         y[..., 0:2] =  (y[..., 0:2].sigmoid() + self.grid[i].to(x_new[i].device)) * self.stride[i]  # xy
                         y[..., 2:4] = y[..., 2:4].exp() * self.anchor_grid[i]  # wh

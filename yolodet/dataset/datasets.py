@@ -58,7 +58,7 @@ def exif_size(img):
 
 # def create_dataloader(path, imgsz, batch_size, stride, cls_map, single_cls, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
 #                       rank=-1, world_size=1, workers=8, image_weights=False,version='v5'):
-def create_dataloader_yolo(path, imgsz, batch_size, stride, opt, augment=False, rank=-1, pad=0.0, rect=False):
+def create_dataloader_yolo(path, imgsz, batch_size, stride, opt, augment=False, rank=-1, pad=0.0, rect=False, norm=False):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
         dataset = LoadImagesAndLabels_YOLO(path, imgsz, batch_size,
@@ -729,7 +729,7 @@ class LoadImagesAndLabels_YOLO(Dataset):  # for training/testing
         }
 
         gaussian_yolo_out = None
-        if self.version in ['gaussian_v3']:
+        if self.version in ['yolov3-gaussian']:
             image_group = [img]
             annotations_group = [{'bboxes':labels_out[:,2:].numpy(),'labels':labels_out[:,1].numpy()}]
             gaussian_yolo_out = self.compute_inputs(image_group, annotations_group)
@@ -744,8 +744,8 @@ class LoadImagesAndLabels_YOLO(Dataset):  # for training/testing
         img, label, path, shapes, img_meta, gaussian_yolo_out = zip(*batch)  # transposed 传回来的每个参数是一个集合
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
-        
-        if gaussian_yolo_out != None:
+        #gaussian_yolo_out -> tuple
+        if gaussian_yolo_out[0] != None:
             return torch.stack(img, 0), [gaussian_yolo_out, img_meta, torch.cat(label, 0)], path, shapes
         return torch.stack(img, 0), torch.cat(label, 0), path, shapes
 
