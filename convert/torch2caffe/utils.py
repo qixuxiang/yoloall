@@ -78,7 +78,7 @@ class TransLog(object):
         self.output_blob_pre = ''
         self.cnet = None
 
-        self.merage_bn = False
+        self.merge_bn = False
         self.layer_type_order = []
         self.layer_name_order = []
 

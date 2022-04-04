@@ -1,22 +1,18 @@
 # General utils
 
-import contextlib
 import glob
 import logging
 import math
 import os
-import signal
 import platform
 import random
 import re
 import subprocess
 import time
 from pathlib import Path
-from subprocess import check_output
 
 import cv2
 import numpy as np
-import pandas as pd
 import torch
 import torchvision
 import yaml
@@ -24,33 +20,18 @@ import yaml
 from yolodet.utils.google_utils import gsutil_getsize
 from yolodet.utils.metrics import fitness
 from yolodet.utils.torch_utils import init_torch_seeds
+# from yolodet.models.two_stage_utils.mmcv import batched_nms
 
 # Settings
-FILE = Path(__file__).resolve()
-ROOT = FILE.parents[1]  # YOLOv5 root directory
-NUM_THREADS = min(8, max(1, os.cpu_count() - 1))  # number of YOLOv5 multiprocessing threads
-
 torch.set_printoptions(linewidth=320, precision=5, profile='long')
 np.set_printoptions(linewidth=320, formatter={'float_kind': '{:11.5g}'.format})  # format short g, %precision=5
-pd.options.display.max_columns = 10
 cv2.setNumThreads(0)  # prevent OpenCV from multithreading (incompatible with PyTorch DataLoader)
-os.environ['NUMEXPR_MAX_THREADS'] = str(NUM_THREADS)  # NumExpr max threads
 
 
 def set_logging(rank=-1):
     logging.basicConfig(
         format="%(message)s",
         level=logging.INFO if rank in [-1, 0] else logging.WARN)
-        
-# def set_logging(name=None, verbose=True):
-#     # Sets level and returns logger
-#     rank = int(os.getenv('RANK', -1))  # rank in world for Multi-GPU trainings
-#     logging.basicConfig(format="%(message)s", level=logging.INFO if (verbose and rank in (-1, 0)) else logging.WARNING)
-#     return logging.getLogger(name)
-
-
-# LOGGER = set_logging(__name__)  # define globally (used in train.py, val.py, detect.py, etc.)
-
 
 
 def init_seeds(seed=0):
@@ -65,12 +46,12 @@ def get_latest_run(search_dir='.'):
     return max(last_list, key=os.path.getctime) if last_list else ''
 
 
-# def check_git_status():
-#     # Suggest 'git pull' if repo is out of date
-#     if platform.system() in ['Linux', 'Darwin'] and not os.path.isfile('/.dockerenv'):
-#         s = subprocess.check_output('if [ -d .git ]; then git fetch && git status -uno; fi', shell=True).decode('utf-8')
-#         if 'Your branch is behind' in s:
-#             print(s[s.find('Your branch is behind'):s.find('\n\n')] + '\n')
+def check_git_status():
+    # Suggest 'git pull' if repo is out of date
+    if platform.system() in ['Linux', 'Darwin'] and not os.path.isfile('/.dockerenv'):
+        s = subprocess.check_output('if [ -d .git ]; then git fetch && git status -uno; fi', shell=True).decode('utf-8')
+        if 'Your branch is behind' in s:
+            print(s[s.find('Your branch is behind'):s.find('\n\n')] + '\n')
 
 
 def check_img_size(img_size, s=32):
@@ -179,7 +160,7 @@ def xywh2xyxy(x):
     y[:, 2] = x[:, 0] + x[:, 2] / 2  # bottom right x
     y[:, 3] = x[:, 1] + x[:, 3] / 2  # bottom right y
     return y
-
+    
 
 def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
     # Rescale coords (xyxy) from img1_shape to img0_shape
@@ -275,6 +256,39 @@ def box_iou(box1, box2):
     return inter / (area1[:, None] + area2 - inter)  # iou = inter / (area1 + area2 - inter)
 
 
+def box_iou_2(box1, box2, x1y1x2y2=True):
+    """
+    Returns the IoU of two bounding boxes
+    """
+    if not x1y1x2y2:
+        # Transform from center and width to exact coordinates
+        b1_x1, b1_x2 = box1[:, 0] - box1[:, 2] / 2, box1[:, 0] + box1[:, 2] / 2
+        b1_y1, b1_y2 = box1[:, 1] - box1[:, 3] / 2, box1[:, 1] + box1[:, 3] / 2
+        b2_x1, b2_x2 = box2[:, 0] - box2[:, 2] / 2, box2[:, 0] + box2[:, 2] / 2
+        b2_y1, b2_y2 = box2[:, 1] - box2[:, 3] / 2, box2[:, 1] + box2[:, 3] / 2
+    else:
+        # Get the coordinates of bounding boxes
+        b1_x1, b1_y1, b1_x2, b1_y2 = box1[:, 0], box1[:, 1], box1[:, 2], box1[:, 3]
+        b2_x1, b2_y1, b2_x2, b2_y2 = box2[:, 0], box2[:, 1], box2[:, 2], box2[:, 3]
+
+    # get the corrdinates of the intersection rectangle
+    inter_rect_x1 = torch.max(b1_x1, b2_x1)
+    inter_rect_y1 = torch.max(b1_y1, b2_y1)
+    inter_rect_x2 = torch.min(b1_x2, b2_x2)
+    inter_rect_y2 = torch.min(b1_y2, b2_y2)
+    # Intersection area
+    inter_area = torch.clamp(inter_rect_x2 - inter_rect_x1, min=0) * torch.clamp(
+        inter_rect_y2 - inter_rect_y1, min=0
+    )
+    # Union Area
+    b1_area = (b1_x2 - b1_x1) * (b1_y2 - b1_y1)
+    b2_area = (b2_x2 - b2_x1) * (b2_y2 - b2_y1)
+
+    iou = inter_area / (b1_area + b2_area - inter_area + 1e-16)
+
+    return iou
+
+
 def wh_iou(wh1, wh2):
     # Returns the nxm IoU matrix. wh1 is nx2, wh2 is mx2
     wh1 = wh1[:, None]  # [N,1,2]
@@ -283,9 +297,9 @@ def wh_iou(wh1, wh2):
     return inter / (wh1.prod(2) + wh2.prod(2) - inter)  # iou = inter / (area1 + area2 - inter)
 
 
-def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic=False, labels=()):
+def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic=False, labels=(), xyxy=False):
     """Performs Non-Maximum Suppression (NMS) on inference results
-
+    默认prediction的shape为(x_c, y_c, w, h, conf, cls)
     Returns:
          detections with shape: nx6 (x1, y1, x2, y2, conf, cls)
     """
@@ -325,8 +339,10 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
         x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
 
         # Box (center x, center y, width, height) to (x1, y1, x2, y2)
-        box = xywh2xyxy(x[:, :4])
-
+        if not xyxy:
+            box = xywh2xyxy(x[:, :4])
+        else:
+            box = x[:, :4]
         # Detections matrix nx6 (xyxy, conf, cls)
         if multi_label:
             i, j = (x[:, 5:] > conf_thres).nonzero(as_tuple=False).T
@@ -370,6 +386,102 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
             break  # time limit exceeded
 
     return output
+
+
+# def yzf_batch_non_max_suppression(prediction, conf_thres=0.01, nms_thres=0.4, all_nms=False):
+#     """
+#     prediction shape ->(x1,y1,x2,y2)
+#     """
+#     bboxes = prediction[...,:4]
+#     score_factor = prediction[...,4]
+#     cls_scores = prediction[...,5:]
+#     cfg = {'iou_threshold': 0.65, 'type': 'nms'}
+
+#     max_scores, labels = torch.max(cls_scores, 1)
+#     valid_mask = score_factor * max_scores >= conf_thres
+
+#     bboxes = bboxes[valid_mask]
+#     scores = max_scores[valid_mask] * score_factor[valid_mask]
+#     labels = labels[valid_mask]
+
+#     if labels.numel() == 0:
+#         return bboxes, labels
+#     else:
+#         dets, keep = batched_nms(bboxes, scores, labels, cfg)
+#         return dets, labels[keep]
+
+
+
+def tsh_batch_non_max_suppression(prediction, conf_thres=0.5, nms_thres=0.4, all_nms=False, xyxy=False):
+    """
+    Removes detections with lower object confidence score than 'conf_thres' and performs
+    Non-Maximum Suppression to further filter detections.
+    Returns detections with shape:
+        (x1, y1, x2, y2, object_conf, class_score, class_pred)
+    """
+
+    output = [None for _ in range(len(prediction))]
+    output_roi = [prediction.new_zeros((0, 4)) for _ in range(len(prediction))]
+    for image_i, image_pred in enumerate(prediction):
+
+        # Filter out confidence scores below threshold
+        image_pred = image_pred[image_pred[:, 4] >= conf_thres]
+        if not xyxy:
+            # From (center x, center y, width, height) to (x1, y1, x2, y2)
+            x1 = image_pred[:, 0] - image_pred[:, 2] / 2.0
+            y1 = image_pred[:, 1] - image_pred[:, 3] / 2.0
+            x2 = image_pred[:, 0] + image_pred[:, 2] / 2.0
+            y2 = image_pred[:, 1] + image_pred[:, 3] / 2.0
+            image_pred[:, 0] = x1
+            image_pred[:, 1] = y1
+            image_pred[:, 2] = x2
+            image_pred[:, 3] = y2
+
+        # If none are remaining => process next image
+        if not image_pred.size(0):
+            continue
+        # Object confidence times class confidence
+        class_confs, class_preds = (image_pred[:, 4:5] * image_pred[:, 5:]).max(1, keepdim=True)
+        index = class_confs[:,0] >= conf_thres
+        # print(index.shape,index)
+        image_pred, class_confs, class_preds = image_pred[index], class_confs[index], class_preds[index]
+
+        detections = torch.cat((image_pred[:, :5], class_confs.float(), class_preds.float()), 1)
+        # Perform non-maximum suppression
+        detections = detections[(-class_confs[:,0]).argsort()]
+
+        keep_boxes = []
+
+        # from nms_ts.nms_c import nms
+        # detections = nms(detections, nms_thres, all_nms)
+        # output[image_i] = detections
+
+        while detections.size(0):
+            
+            large_overlap = box_iou_2(detections[0, :4].unsqueeze(0), detections[:, :4]) > nms_thres
+            if not large_overlap[0]:
+                detections = detections[1:]
+                continue
+
+            if not all_nms:
+                label_match = detections[0, -1] == detections[:, -1]
+                # Indices of boxes with lower confidence scores, large IOUs and matching labels
+                invalid = large_overlap & label_match
+            else:
+                invalid = large_overlap
+
+            # weights = detections[invalid, 4:5]
+            # Merge overlapping bboxes by order of confidence
+            # detections[0, :4] = (weights * detections[invalid, :4]).sum(0) / weights.sum()
+            keep_boxes += [detections[0]]
+            detections = detections[~invalid]
+            
+        if keep_boxes:
+            output[image_i] = torch.stack(keep_boxes)
+            output_roi[image_i] = torch.stack(keep_boxes)[:, 0:5]
+            # output_roi[image_i][:, 5] = level
+
+    return output, output_roi
 
 
 def strip_optimizer(f='weights/best.pt', s=''):  # from utils.general import *; strip_optimizer()
@@ -463,151 +575,3 @@ def increment_path(path, exist_ok=True, sep=''):
         i = [int(m.groups()[0]) for m in matches if m]  # indices
         n = max(i) + 1 if i else 2  # increment number
         return f"{path}{sep}{n}"  # update path
-
-def colorstr(*input):
-    # Colors a string https://en.wikipedia.org/wiki/ANSI_escape_code, i.e.  colorstr('blue', 'hello world')
-    *args, string = input if len(input) > 1 else ('blue', 'bold', input[0])  # color arguments, string
-    colors = {'black': '\033[30m',  # basic colors
-              'red': '\033[31m',
-              'green': '\033[32m',
-              'yellow': '\033[33m',
-              'blue': '\033[34m',
-              'magenta': '\033[35m',
-              'cyan': '\033[36m',
-              'white': '\033[37m',
-              'bright_black': '\033[90m',  # bright colors
-              'bright_red': '\033[91m',
-              'bright_green': '\033[92m',
-              'bright_yellow': '\033[93m',
-              'bright_blue': '\033[94m',
-              'bright_magenta': '\033[95m',
-              'bright_cyan': '\033[96m',
-              'bright_white': '\033[97m',
-              'end': '\033[0m',  # misc
-              'bold': '\033[1m',
-              'underline': '\033[4m'}
-    return ''.join(colors[x] for x in args) + f'{string}' + colors['end']
-
-
-class Timeout(contextlib.ContextDecorator):
-    # Usage: @Timeout(seconds) decorator or 'with Timeout(seconds):' context manager
-    def __init__(self, seconds, *, timeout_msg='', suppress_timeout_errors=True):
-        self.seconds = int(seconds)
-        self.timeout_message = timeout_msg
-        self.suppress = bool(suppress_timeout_errors)
-
-    def _timeout_handler(self, signum, frame):
-        raise TimeoutError(self.timeout_message)
-
-    def __enter__(self):
-        signal.signal(signal.SIGALRM, self._timeout_handler)  # Set handler for SIGALRM
-        signal.alarm(self.seconds)  # start countdown for SIGALRM to be raised
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        signal.alarm(0)  # Cancel SIGALRM if it's scheduled
-        if self.suppress and exc_type is TimeoutError:  # Suppress TimeoutError
-            return True
-
-
-def is_ascii(s=''):
-    # Is string composed of all ASCII (no UTF) characters? (note str().isascii() introduced in python 3.7)
-    s = str(s)  # convert list, tuple, None, etc. to str
-    return len(s.encode().decode('ascii', 'ignore')) == len(s)
-
-
-def is_chinese(s='人工智能'):
-    # Is string composed of any Chinese characters?
-    return re.search('[\u4e00-\u9fff]', s)
-
-
-def try_except(func):
-    # try-except function. Usage: @try_except decorator
-    def handler(*args, **kwargs):
-        try:
-            func(*args, **kwargs)
-        except Exception as e:
-            print(e)
-
-    return handler
-
-
-class WorkingDirectory(contextlib.ContextDecorator):
-    # Usage: @WorkingDirectory(dir) decorator or 'with WorkingDirectory(dir):' context manager
-    def __init__(self, new_dir):
-        self.dir = new_dir  # new dir
-        self.cwd = Path.cwd().resolve()  # current dir
-
-    def __enter__(self):
-        os.chdir(self.dir)
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        os.chdir(self.cwd)
-
-
-def is_docker():
-    # Is environment a Docker container?
-    return Path('/workspace').exists()  # or Path('/.dockerenv').exists()
-
-
-def check_online():
-    # Check internet connectivity
-    import socket
-    try:
-        socket.create_connection(("1.1.1.1", 443), 5)  # check host accessibility
-        return True
-    except OSError:
-        return False
-
-
-def emojis(str=''):
-    # Return platform-dependent emoji-safe version of string
-    return str.encode().decode('ascii', 'ignore') if platform.system() == 'Windows' else str
-
-
-def is_writeable(dir, test=False):
-    # Return True if directory has write permissions, test opening a file with write permissions if test=True
-    if test:  # method 1
-        file = Path(dir) / 'tmp.txt'
-        try:
-            with open(file, 'w'):  # open file with write permissions
-                pass
-            file.unlink()  # remove file
-            return True
-        except OSError:
-            return False
-    else:  # method 2
-        return os.access(dir, os.R_OK)  # possible issues on Windows
-
-
-@try_except
-@WorkingDirectory(ROOT)
-def check_git_status():
-    # Recommend 'git pull' if code is out of date
-    msg = ', for updates see https://github.com/ultralytics/yolov5'
-    print(colorstr('github: '), end='')
-    assert Path('.git').exists(), 'skipping check (not a git repository)' + msg
-    assert not is_docker(), 'skipping check (Docker image)' + msg
-    assert check_online(), 'skipping check (offline)' + msg
-
-    cmd = 'git fetch && git config --get remote.origin.url'
-    url = check_output(cmd, shell=True, timeout=5).decode().strip().rstrip('.git')  # git fetch
-    branch = check_output('git rev-parse --abbrev-ref HEAD', shell=True).decode().strip()  # checked out
-    n = int(check_output(f'git rev-list {branch}..origin/master --count', shell=True))  # commits behind
-    if n > 0:
-        s = f"⚠️ YOLOv5 is out of date by {n} commit{'s' * (n > 1)}. Use `git pull` or `git clone {url}` to update."
-    else:
-        s = f'up to date with {url} ✅'
-    print(emojis(s))  # emoji-safe
-
-
-def user_config_dir(dir='Ultralytics', env_var='YOLOV5_CONFIG_DIR'):
-    # Return path of user configuration directory. Prefer environment variable if exists. Make dir if required.
-    env = os.getenv(env_var)
-    if env:
-        path = Path(env)  # use environment variable
-    else:
-        cfg = {'Windows': 'AppData/Roaming', 'Linux': '.config', 'Darwin': 'Library/Application Support'}  # 3 OS dirs
-        path = Path.home() / cfg.get(platform.system(), '')  # OS-specific config dir
-        path = (path if is_writeable(path) else Path('/tmp')) / dir  # GCP and AWS lambda fix, only /tmp is writeable
-    path.mkdir(exist_ok=True)  # make if required
-    return path

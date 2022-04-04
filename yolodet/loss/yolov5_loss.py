@@ -10,7 +10,7 @@ def compute_loss_v5(self,p,targets):
 
     device = targets.device
     lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
-    tcls, tbox, indices, anchors = build_targets_v5(p, targets,self.model) 
+    tcls, tbox, indices, anchors = build_targets_v5(self, p, targets) 
             # Losses
     for i, pi in enumerate(p):  # layer index, layer predictions
         b, a, gj, gi = indices[i]  # image, anchor, gridy, gridx
@@ -57,10 +57,11 @@ def compute_loss_v5(self,p,targets):
 
 
 
-def build_targets_v5(p, targets, model):
+def build_targets_v5(self, p, targets):
     # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
-    det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
-    na, nt = det.na, targets.shape[0]  # number of anchors, targets
+    #det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
+
+    na, nt = self.na, targets.shape[0]  # number of anchors, targets
     tcls, tbox, indices, anch = [], [], [], []
     gain = torch.ones(7, device=targets.device)  # normalized to gridspace gain
     ai = torch.arange(na, device=targets.device).float().view(na, 1).repeat(1, nt)  # same as .repeat_interleave(nt)
@@ -72,8 +73,8 @@ def build_targets_v5(p, targets, model):
                         # [1, 1], [1, -1], [-1, 1], [-1, -1],  # jk,jm,lk,lm
                         ], device=targets.device).float() * g  # offsets
 
-    for i in range(det.nl):
-        anchors = det.anchors[i]
+    for i in range(self.nl):
+        anchors = self.anchors[i]
         gain[2:6] = torch.tensor(p[i].shape)[[3, 2, 3, 2]]  # xyxy gain
 
         # Match targets to anchors
@@ -81,7 +82,7 @@ def build_targets_v5(p, targets, model):
         if nt:
             # Matches
             r = t[:, :, 4:6] / anchors[:, None]  # wh ratio
-            j = torch.max(r, 1. / r).max(2)[0] < model.hyp['anchor_t']  # compare
+            j = torch.max(r, 1. / r).max(2)[0] < self.hyp['anchor_t']  # compare
             # j = wh_iou(anchors, t[:, 4:6]) > model.hyp['iou_t']  # iou(3,n)=wh_iou(anchors(3,2), gwh(n,2))
             t = t[j]  # filter
 

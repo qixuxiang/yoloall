@@ -1,0 +1,910 @@
+config: configs/objectdet/test.yaml
+local_rank: -1
+device: null
+world_size: 1
+global_rank: -1
+save_dir: runs_det/test/coco_test_yzf_csp_yolo-mmdet_exp
+train_cfg:
+  project: coco_test
+  model: yzf_csp
+  weights_one: null
+  weights_two: null
+  freeze: []
+  quantize: false
+  version: yolo-mmdet
+  anchors:
+  - - 17
+    - 8
+    - 10
+    - 14
+    - 26
+    - 12
+    - 16
+    - 23
+    - 49
+    - 15
+  - - 31
+    - 25
+    - 26
+    - 43
+    - 59
+    - 27
+    - 46
+    - 58
+    - 107
+    - 31
+  - - 76
+    - 51
+    - 138
+    - 57
+    - 98
+    - 90
+    - 203
+    - 82
+    - 411
+    - 127
+  width: 960
+  height: 576
+  multi_scale: false
+  quad: false
+  epochs: 100
+  batch_size: 2
+  nbs: 64
+  total_batch_size: null
+  workers: 1
+  sync_bn: true
+  test: true
+  evolve: false
+  save_model_items: 10
+  name: exp
+  save_tmp_model: true
+  debug: 0
+  logiter: 1
+two_stage:
+  two_stage_enabel: 0
+  roi_extract: RoIAlign
+  model: normal
+  feat_channels: 256
+  loss_mean: true
+  start: 3
+transformer:
+  transformer_enabl: 0
+  transformer_cfg:
+    embed_dims: 96
+    depths:
+    - 2
+    - 2
+    - 18
+    - 2
+    num_heads:
+    - 3
+    - 6
+    - 12
+    - 24
+    window_size: 7
+    mlp_ratio: 4
+    qkv_bias: true
+    qk_scale: null
+    drop_rate: 0.0
+    attn_drop_rate: 0.0
+    drop_path_rate: 0.2
+    patch_norm: true
+    out_indices:
+    - 0
+    - 1
+    - 2
+    - 3
+    with_cp: false
+    convert_weights: true
+    pretrained: /home/yu/data/premodel/swin_small_patch4_window7_224.pth
+  optimizer_cfg:
+    lr: 0.001
+    betas:
+    - 0.9
+    - 0.999
+    weight_decay: 0.05
+  paramwise_cfg:
+    absolute_pos_embed:
+      decay_mult: 0.0
+    norm:
+      decay_mult: 0.0
+    relative_position_bias_table:
+      decay_mult: 0.0
+distiller:
+  distill_enable: 0
+multi_head:
+  multi_head_enable: 0
+data:
+  train: /home/yu/data/dataset/coco/val_label.txt
+  val: /home/yu/data/dataset/coco/test_label.txt
+  nc: 80
+  iou_thres: 0.35
+  name_conf_cls_map:
+  - - person
+    - 0.3
+    - &id001
+      - 0
+  - - bicycle
+    - 0.3
+    - &id002
+      - 1
+  - - car
+    - 0.3
+    - &id003
+      - 2
+  - - motorcycle
+    - 0.3
+    - &id004
+      - 3
+  - - airplane
+    - 0.3
+    - &id005
+      - 4
+  - - bus
+    - 0.3
+    - &id006
+      - 5
+  - - train
+    - 0.3
+    - &id007
+      - 6
+  - - truck
+    - 0.3
+    - &id008
+      - 7
+  - - boat
+    - 0.3
+    - &id009
+      - 8
+  - - traffic light
+    - 0.3
+    - &id010
+      - 9
+  - - fire hydrant
+    - 0.3
+    - &id011
+      - 10
+  - - stop sign
+    - 0.3
+    - &id012
+      - 11
+  - - parking meter
+    - 0.3
+    - &id013
+      - 12
+  - - bench
+    - 0.3
+    - &id014
+      - 13
+  - - bird
+    - 0.3
+    - &id015
+      - 14
+  - - cat
+    - 0.3
+    - &id016
+      - 15
+  - - dog
+    - 0.3
+    - &id017
+      - 16
+  - - horse
+    - 0.3
+    - &id018
+      - 17
+  - - sheep
+    - 0.3
+    - &id019
+      - 18
+  - - cow
+    - 0.3
+    - &id020
+      - 19
+  - - elephant
+    - 0.3
+    - &id021
+      - 20
+  - - bear
+    - 0.3
+    - &id022
+      - 21
+  - - zebra
+    - 0.3
+    - &id023
+      - 22
+  - - giraffe
+    - 0.3
+    - &id024
+      - 23
+  - - backpack
+    - 0.3
+    - &id025
+      - 24
+  - - umbrella
+    - 0.3
+    - &id026
+      - 25
+  - - handbag
+    - 0.3
+    - &id027
+      - 26
+  - - tie
+    - 0.3
+    - &id028
+      - 27
+  - - suitcase
+    - 0.3
+    - &id029
+      - 28
+  - - frisbee
+    - 0.3
+    - &id030
+      - 29
+  - - skis
+    - 0.3
+    - &id031
+      - 30
+  - - snowboard
+    - 0.3
+    - &id032
+      - 31
+  - - sports ball
+    - 0.3
+    - &id033
+      - 32
+  - - kite
+    - 0.3
+    - &id034
+      - 33
+  - - baseball bat
+    - 0.3
+    - &id035
+      - 34
+  - - baseball glove
+    - 0.3
+    - &id036
+      - 35
+  - - skateboard
+    - 0.3
+    - &id037
+      - 36
+  - - surfboard
+    - 0.3
+    - &id038
+      - 37
+  - - tennis racket
+    - 0.3
+    - &id039
+      - 38
+  - - bottle
+    - 0.3
+    - &id040
+      - 39
+  - - wine glass
+    - 0.3
+    - &id041
+      - 40
+  - - cup
+    - 0.3
+    - &id042
+      - 41
+  - - fork
+    - 0.3
+    - &id043
+      - 42
+  - - knife
+    - 0.3
+    - &id044
+      - 43
+  - - spoon
+    - 0.3
+    - &id045
+      - 44
+  - - bowl
+    - 0.3
+    - &id046
+      - 45
+  - - banana
+    - 0.3
+    - &id047
+      - 46
+  - - apple
+    - 0.3
+    - &id048
+      - 47
+  - - sandwich
+    - 0.3
+    - &id049
+      - 48
+  - - orange
+    - 0.3
+    - &id050
+      - 49
+  - - broccoli
+    - 0.3
+    - &id051
+      - 50
+  - - carrot
+    - 0.3
+    - &id052
+      - 51
+  - - hot dog
+    - 0.3
+    - &id053
+      - 52
+  - - pizza
+    - 0.3
+    - &id054
+      - 53
+  - - donut
+    - 0.3
+    - &id055
+      - 54
+  - - cake
+    - 0.3
+    - &id056
+      - 55
+  - - chair
+    - 0.3
+    - &id057
+      - 56
+  - - couch
+    - 0.3
+    - &id058
+      - 57
+  - - potted plant
+    - 0.3
+    - &id059
+      - 58
+  - - bed
+    - 0.3
+    - &id060
+      - 59
+  - - dining table
+    - 0.3
+    - &id061
+      - 60
+  - - toilet
+    - 0.3
+    - &id062
+      - 61
+  - - tv
+    - 0.3
+    - &id063
+      - 62
+  - - laptop
+    - 0.3
+    - &id064
+      - 63
+  - - mouse
+    - 0.3
+    - &id065
+      - 64
+  - - remote
+    - 0.3
+    - &id066
+      - 65
+  - - keyboard
+    - 0.3
+    - &id067
+      - 66
+  - - cell phone
+    - 0.3
+    - &id068
+      - 67
+  - - microwave
+    - 0.3
+    - &id069
+      - 68
+  - - oven
+    - 0.3
+    - &id070
+      - 69
+  - - toaster
+    - 0.3
+    - &id071
+      - 70
+  - - sink
+    - 0.3
+    - &id072
+      - 71
+  - - refrigerator
+    - 0.3
+    - &id073
+      - 72
+  - - book
+    - 0.3
+    - &id074
+      - 73
+  - - clock
+    - 0.3
+    - &id075
+      - 74
+  - - vase
+    - 0.3
+    - &id076
+      - 75
+  - - scissors
+    - 0.3
+    - &id077
+      - 76
+  - - teddy bear
+    - 0.3
+    - &id078
+      - 77
+  - - hair drier
+    - 0.3
+    - &id079
+      - 78
+  - - toothbrush
+    - 0.3
+    - &id080
+      - 79
+  names:
+  - person
+  - bicycle
+  - car
+  - motorcycle
+  - airplane
+  - bus
+  - train
+  - truck
+  - boat
+  - traffic light
+  - fire hydrant
+  - stop sign
+  - parking meter
+  - bench
+  - bird
+  - cat
+  - dog
+  - horse
+  - sheep
+  - cow
+  - elephant
+  - bear
+  - zebra
+  - giraffe
+  - backpack
+  - umbrella
+  - handbag
+  - tie
+  - suitcase
+  - frisbee
+  - skis
+  - snowboard
+  - sports ball
+  - kite
+  - baseball bat
+  - baseball glove
+  - skateboard
+  - surfboard
+  - tennis racket
+  - bottle
+  - wine glass
+  - cup
+  - fork
+  - knife
+  - spoon
+  - bowl
+  - banana
+  - apple
+  - sandwich
+  - orange
+  - broccoli
+  - carrot
+  - hot dog
+  - pizza
+  - donut
+  - cake
+  - chair
+  - couch
+  - potted plant
+  - bed
+  - dining table
+  - toilet
+  - tv
+  - laptop
+  - mouse
+  - remote
+  - keyboard
+  - cell phone
+  - microwave
+  - oven
+  - toaster
+  - sink
+  - refrigerator
+  - book
+  - clock
+  - vase
+  - scissors
+  - teddy bear
+  - hair drier
+  - toothbrush
+  conf_thres:
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  - 0.3
+  cls_map:
+    0: *id001
+    1: *id002
+    2: *id003
+    3: *id004
+    4: *id005
+    5: *id006
+    6: *id007
+    7: *id008
+    8: *id009
+    9: *id010
+    10: *id011
+    11: *id012
+    12: *id013
+    13: *id014
+    14: *id015
+    15: *id016
+    16: *id017
+    17: *id018
+    18: *id019
+    19: *id020
+    20: *id021
+    21: *id022
+    22: *id023
+    23: *id024
+    24: *id025
+    25: *id026
+    26: *id027
+    27: *id028
+    28: *id029
+    29: *id030
+    30: *id031
+    31: *id032
+    32: *id033
+    33: *id034
+    34: *id035
+    35: *id036
+    36: *id037
+    37: *id038
+    38: *id039
+    39: *id040
+    40: *id041
+    41: *id042
+    42: *id043
+    43: *id044
+    44: *id045
+    45: *id046
+    46: *id047
+    47: *id048
+    48: *id049
+    49: *id050
+    50: *id051
+    51: *id052
+    52: *id053
+    53: *id054
+    54: *id055
+    55: *id056
+    56: *id057
+    57: *id058
+    58: *id059
+    59: *id060
+    60: *id061
+    61: *id062
+    62: *id063
+    63: *id064
+    64: *id065
+    65: *id066
+    66: *id067
+    67: *id068
+    68: *id069
+    69: *id070
+    70: *id071
+    71: *id072
+    72: *id073
+    73: *id074
+    74: *id075
+    75: *id076
+    76: *id077
+    77: *id078
+    78: *id079
+    79: *id080
+  version: yolo-mmdet
+yolommdet:
+  loss_mean: true
+  loss_cls_weight: 1.0
+  loss_conf_weight: 1.0
+  loss_xy_weight: 0.75
+  loss_wh_weight: 0.75
+  loss_reduction: sum
+  pos_iou_thr: 0.5
+  neg_iou_thr: 0.5
+  show_pos_bbox: false
+  area_scale: true
+  mmdet_obj_scale: 1.5
+  mmdet_noobj_scale: 1.0
+  box_loss_type: ciou
+  loss_iou_weight: 4.0
+yolofmmdet:
+  loss_mean: true
+  loss_cls_weight: 1.0
+  loss_conf_weight: 1.0
+  loss_xy_weight: 0.75
+  loss_wh_weight: 0.75
+  loss_reduction: sum
+  pos_ignore_thr: 0.15
+  neg_ignore_thr: 0.8
+  show_pos_bbox: false
+  area_scale: true
+  mmdet_obj_scale: 1.5
+  mmdet_noobj_scale: 1.0
+  box_loss_type: ciou
+  loss_iou_weight: 4.0
+yoloxmmdet:
+  loss_mean: true
+  loss_cls_weight: 1.0
+  loss_conf_weight: 1.0
+  loss_reduction: sum
+  show_pos_bbox: false
+  area_scale: true
+  mmdet_obj_scale: 1.5
+  mmdet_noobj_scale: 1.0
+  box_loss_type: iou
+  loss_iou_weight: 5.0
+  simOTA:
+    center_radius: 2.5
+    candidate_topk: 10
+    iou_weight: 3.0
+    cls_weight: 1.0
+yzfmmdet:
+  loss_mean: true
+  loss_cls_weight: 1.0
+  loss_conf_weight: 1.0
+  loss_xy_weight: 0.75
+  loss_wh_weight: 0.75
+  loss_reduction: sum
+  pos_iou_thr: 0.5
+  neg_iou_thr: 0.5
+  show_pos_bbox: false
+  area_scale: true
+  mmdet_obj_scale: 1.5
+  mmdet_noobj_scale: 1.0
+  box_loss_type: iou
+  loss_iou_weight: 4.0
+  simOTA:
+    center_radius: 2.5
+    candidate_topk: 10
+    iou_weight: 3.0
+    cls_weight: 1.0
+yoloatss:
+  loss_mean: true
+  loss_cls_weight: 1.0
+  loss_conf_weight: 1.0
+  loss_xy_weight: 0.75
+  loss_wh_weight: 0.75
+  loss_reduction: sum
+  topk: 9
+  show_pos_bbox: false
+  area_scale: true
+  mmdet_obj_scale: 1.5
+  mmdet_noobj_scale: 1.0
+  box_loss_type: ciou
+  loss_iou_weight: 4.0
+yoloatssyzf: null
+yolofcos:
+  loss_mean: true
+  loss_cls_weight: 1.0
+  loss_conf_weight: 1.0
+  loss_reduction: mean
+  show_pos_bbox: false
+  area_scale: true
+  mmdet_obj_scale: 1.5
+  mmdet_noobj_scale: 1.0
+  box_loss_type: ciou
+  loss_iou_weight: 4.0
+  regress_ranges:
+  - - -1
+    - 128
+  - - 128
+    - 256
+  - - 256
+    - 960
+  center_sampling: true
+  center_sample_radius: 1.5
+  norm_on_bbox: true
+  centerness_on_reg: false
+yolocenter:
+  loss_weight_heatmap: 1
+  loss_wh_weight: 0.1
+  loss_offset_weight: 1
+  show_pos_bbox: false
+yologfl:
+  loss_mean: true
+  loss_cls_weight: 1.0
+  loss_iou_weight: 4.0
+  loss_dfl_weight: 0.25
+  loss_reduction: mean
+  box_loss_type: ciou
+  use_sigmoid: false
+  reg_max: 16
+  reg_topk: 4
+  add_mean: true
+  topk: 9
+  show_pos_bbox: false
+  area_scale: true
+  mmdet_obj_scale: 1.5
+  mmdet_noobj_scale: 1.0
+yolov3v5:
+  box: 0.01
+  cls: 0.5
+  cls_pw: 1.0
+  obj: 1.0
+  obj_pw: 1.0
+  iou_t: 0.2
+  anchor_t: 2.91
+  fl_gamma: 0.0
+  loss_mean: true
+  autobalance: false
+  v5_loss_balance: false
+  targets_jklm: false
+  objness_iou_ratio: 0.0
+  warmup_bias_lr: 0.1
+  gaussian_thresh: 0.3
+yolov3gaussian: null
+yolov4:
+  use_all_anchors: false
+  object_scale: 1.0
+  noobject_scale: 1.0
+  class_scale: 1.0
+  coord_scale: 1.0
+  cls_normalizer: 1.0
+  iou_normalizer: 1.0
+  ignore_thresh: 0.5
+  iou_thresh: 1.0
+  label_smooth_eps: 0
+  box_loss_type: ciou
+  focalloss: false
+hyp:
+  adam: false
+  norm: L2
+  max_norm: 0
+  max_one_norm: 0
+  lr0: 0.001
+  lrf: 0.2
+  momentum: 0.9
+  weight_decay: 0.0001
+  warmup_epochs: 3.0
+  warmup_momentum: 0.9
+  warmup_bias_lr: 0.0
+  lr_cos: false
+  lr_step:
+  - 40
+  - 80
+  - 100
+  perspectives:
+    degrees: 0.0
+    translate: 0.05
+    scale: 0.1
+    shear: 0.0
+    perspective: 0.0
+  perspectives_norm:
+    degrees: 0.0
+    translate: 0.09
+    scale: 0.5
+    shear: 0.0
+    perspective: 0.0
+  mosaic:
+    prob: 0.6
+    mode: 1
+  copypaste:
+    prob: 0.6
+    past_times: 8
+    past_pic: 8
+  mixup:
+    prob: 0.1
+  gaussianblur:
+    prob: 0.2
+  noise:
+    prob: 0.05
+    thres: 0.001
+    mean: 0
+    var: 0.001
+  cutout:
+    prob: 0.05
+  cutmix:
+    prob: 0.8
+  histequal:
+    prob: 0.6
+version_info:
+  yolov3: yolov3v5
+  yolov5: yolov3v5
+  yolov4: yolov4
+  yolo-mmdet: yolommdet
+  yolov3-gaussian: yolov3gaussian
+  yolof-mmdet: yolofmmdet
+  yolox-mmdet: yoloxmmdet
+  yolox-yzf-mmdet: yzfmmdet
+  yolo-atss-mmdet: yoloatss
+  yolo-atss-yzf-mmdet: yoloatssyzf
+  yolo-fcos-mmdet: yolofcos
+  yolo-center-mmdet: yolocenter
+  yolo-gfl-mmdet: yologfl
+batch_size: 2
+total_batch_size: 2
+img_size:
+- 576
+- 960

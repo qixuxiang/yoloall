@@ -5,34 +5,52 @@ import torch.nn as nn
 import numpy as np
 from yolodet.utils.general import bbox_iou
 from yolodet.utils.torch_utils import is_parallel
+#detection
 from yolodet.loss.yolov5_loss import compute_loss_v5
 from yolodet.loss.yolo3_loss import compute_loss_v3
+from yolodet.loss.gaussian_loss_utils import compute_gaussian_yolo_loss
 from yolodet.loss.darknet_loss import compute_loss_darknet
 # from yolodet.loss.yolov4_loss import build_targets_v4
 from yolodet.loss.mmdet_loss import YOLOV3Head
+from yolodet.loss.yolof_loss_utils import YOLOFHead
+from yolodet.loss.yolox_loss_utils import YOLOXHead
+from yolodet.loss.atss_loss_utils import ATSSHead
+from yolodet.loss.fcos_loss_utils import FCOSHead
+from yolodet.loss.centernet_loss_utils import CenterNetHead
+from yolodet.loss.gfocal_loss_utills import GFLHead
+
+#distiller
+from yolodet.loss.distiller_loss_utils import LDHead
+
+#for test
+from yolodet.loss.yzf_loss_utils import YOLOXHead_yzf, ATSSHead_yzf
 
 
 class ComputeLoss:
     # Compute losses
     def __init__(self, model, opt, autobalance=False):
         super(ComputeLoss, self).__init__()
-        device = next(model.parameters()).device  # get model device
-        self.hyp = model.hyp  # hyperparameters
-        self.version = opt.train_cfg['version']
-        self.model = model
-        # self.add = False
+        device                  = next(model.parameters()).device  # get model device
+        self.hyp                = model.hyp  # hyperparameters
+        self.version            = opt.train_cfg['version']
+        self.model              = model.module if is_parallel(model) else model
+        self.distiller          = opt.distiller['distill_enable']
         try:
-            det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
-        except:
-            det = model.module.model.detect if is_parallel(model) else model.model.detect  # Detect() module
-        #self.stride = list(np.array(det.stride))
-        self.show_pos_img = opt.yolommdet['show_pos_bbox']
-        self.nc = det.nc
-        self.na = det.na
-        self.anchors = det.anchors
-        self.nl = det.nl
+            det = self.model.model[-1] # if is_parallel(model) else model.model[-1]  # yaml
+        except Exception:
+            #det = self.model.detect # model.module.model.detect if is_parallel(model) else model.detect  # py
+            if self.distiller:
+                det = self.model.student.model.detect 
+            else:
+                det = self.model.model.detect 
+        #self.stride     = list(det.stride.numpy())
+        self.nc         = det.nc
+        self.na         = det.na
+        self.anchors    = det.anchors
+        self.nl         = det.nl
+        self.stride     = list(det.stride)
 
-        if self.version in ['v3','v5']:
+        if self.version in ['v3','v5','gaussian_v3']:
 
             # Define criteria
             BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([self.hyp['cls_pw']], device=device))
@@ -49,15 +67,14 @@ class ComputeLoss:
             self.ssi = list(det.stride).index(16) if autobalance else 0  # stride 16 index
             # for k in 'na', 'nc', 'nl', 'anchors':
             #     setattr(self, k, getattr(det, k))
-
-        elif self.version == 'mmdet':
+        elif self.version == 'yolo-mmdet':#
             self.head_loss = YOLOV3Head(
                 num_classes = self.nc,
-                anchor_generator = [i.reshape(-1,2).tolist() for i in np.array(opt.train_cfg['anchors'])], 
-                featmap_strides = list(np.array(det.stride)),
+                anchor_generator = np.array(opt.train_cfg['anchors']).reshape(len(opt.train_cfg['anchors']),-1,2).tolist(),
+                featmap_strides = self.model.strides_list if opt.transformer['transformer_enabl'] else list(det.stride.numpy()), #注意多卡时的写法：model.module
                 add = not opt.yolommdet['loss_mean'],
                 box_loss_type = opt.yolommdet['box_loss_type'],
-                show_pos_img = opt.yolommdet['show_pos_bbox'],
+                show_pos_bbox = opt.yolommdet['show_pos_bbox'],
                 loss_cls_weight = opt.yolommdet['loss_cls_weight'],
                 loss_conf_weight = opt.yolommdet['loss_conf_weight'],
                 loss_xy_weight = opt.yolommdet['loss_xy_weight'],
@@ -66,25 +83,217 @@ class ComputeLoss:
                 pos_iou_thr = opt.yolommdet['pos_iou_thr'],
                 neg_iou_thr = opt.yolommdet['neg_iou_thr'],
                 area_scale = opt.yolommdet['area_scale'],
-                obj_scale = opt.yolommdet['mmdet_obj_scale'],
-                noobj_scale = opt.yolommdet['mmdet_noobj_scale'],
-                loss_iou_weight = opt.yolommdet['loss_iou_weight'],
+                object_scale = opt.yolommdet['mmdet_obj_scale'],
+                noobject_scale = opt.yolommdet['mmdet_noobj_scale'],
+                loss_iou_weight = opt.yolommdet['loss_iou_weight']
             )
+
+        elif self.version == 'yolox-yzf-mmdet':
+            self.head_loss = YOLOXHead_yzf(
+                num_classes = self.nc,
+                anchor_generator = np.array(opt.train_cfg['anchors']).reshape(len(opt.train_cfg['anchors']),-1,2).tolist(),
+                featmap_strides = self.model.strides_list if opt.transformer['transformer_enabl'] else list(det.stride.numpy()), #注意多卡时的写法：model.module
+                add = not opt.yzfmmdet['loss_mean'],
+                box_loss_type = opt.yzfmmdet['box_loss_type'],
+                show_pos_bbox = opt.yzfmmdet['show_pos_bbox'],
+                loss_cls_weight = opt.yzfmmdet['loss_cls_weight'],
+                loss_conf_weight = opt.yzfmmdet['loss_conf_weight'],
+                loss_xy_weight = opt.yzfmmdet['loss_xy_weight'],
+                loss_wh_weight = opt.yzfmmdet['loss_wh_weight'],
+                loss_reduction = opt.yzfmmdet['loss_reduction'],
+                pos_iou_thr = opt.yzfmmdet['pos_iou_thr'],
+                neg_iou_thr = opt.yzfmmdet['neg_iou_thr'],
+                area_scale = opt.yzfmmdet['area_scale'],
+                object_scale = opt.yzfmmdet['mmdet_obj_scale'],
+                noobject_scale = opt.yzfmmdet['mmdet_noobj_scale'],
+                loss_iou_weight = opt.yzfmmdet['loss_iou_weight'],
+                simOTA = opt.yzfmmdet['simOTA']
+            )
+        elif self.version == 'yolof-mmdet':
+            self.head_loss = YOLOFHead(
+                num_classes = self.nc,
+                anchor_generator = np.array(opt.train_cfg['anchors']).reshape(len(opt.train_cfg['anchors']),-1,2).tolist(),
+                featmap_strides = list(det.stride.numpy()), #注意多卡时的写法：model.module
+                add = not opt.yolofmmdet['loss_mean'],
+                box_loss_type = opt.yolofmmdet['box_loss_type'],
+                show_pos_bbox = opt.yolofmmdet['show_pos_bbox'],
+                loss_cls_weight = opt.yolofmmdet['loss_cls_weight'],
+                loss_conf_weight = opt.yolofmmdet['loss_conf_weight'],
+                loss_xy_weight = opt.yolofmmdet['loss_xy_weight'],
+                loss_wh_weight = opt.yolofmmdet['loss_wh_weight'],
+                loss_reduction = opt.yolofmmdet['loss_reduction'],
+                pos_ignore_thr = opt.yolofmmdet['pos_ignore_thr'],
+                neg_ignore_thr = opt.yolofmmdet['neg_ignore_thr'],
+                area_scale = opt.yolofmmdet['area_scale'],
+                object_scale = opt.yolofmmdet['mmdet_obj_scale'],
+                noobject_scale = opt.yolofmmdet['mmdet_noobj_scale'],
+                loss_iou_weight = opt.yolofmmdet['loss_iou_weight']
+            )
+        elif self.version == 'yolox-mmdet':
+            self.head_loss = YOLOXHead(
+                num_classes = self.nc,
+                anchor_generator = np.array(opt.train_cfg['anchors']).reshape(len(opt.train_cfg['anchors']),-1,2).tolist(),
+                featmap_strides = list(det.stride.numpy()), #注意多卡时的写法：model.module
+                add = not opt.yoloxmmdet['loss_mean'],
+                box_loss_type = opt.yoloxmmdet['box_loss_type'],
+                show_pos_bbox = opt.yoloxmmdet['show_pos_bbox'],
+                loss_cls_weight = opt.yoloxmmdet['loss_cls_weight'],
+                loss_conf_weight = opt.yoloxmmdet['loss_conf_weight'],
+                loss_reduction = opt.yoloxmmdet['loss_reduction'],
+                area_scale = opt.yoloxmmdet['area_scale'],
+                object_scale = opt.yoloxmmdet['mmdet_obj_scale'],
+                noobject_scale = opt.yoloxmmdet['mmdet_noobj_scale'],
+                loss_iou_weight = opt.yoloxmmdet['loss_iou_weight'],
+                simOTA = opt.yoloxmmdet['simOTA']
+            )
+        elif self.version == 'yolo-atss-mmdet':
+            self.head_loss = ATSSHead(
+                num_classes = self.nc,
+                anchor_generator = np.array(opt.train_cfg['anchors']).reshape(len(opt.train_cfg['anchors']),-1,2).tolist(),
+                featmap_strides = list(det.stride.numpy()), #注意多卡时的写法：model.module
+                add = not opt.yoloatss['loss_mean'],
+                box_loss_type = opt.yoloatss['box_loss_type'],
+                show_pos_bbox = opt.yoloatss['show_pos_bbox'],
+                loss_cls_weight = opt.yoloatss['loss_cls_weight'],
+                loss_conf_weight = opt.yoloatss['loss_conf_weight'],
+                loss_xy_weight = opt.yoloatss['loss_xy_weight'],
+                loss_wh_weight = opt.yoloatss['loss_wh_weight'],
+                loss_reduction = opt.yoloatss['loss_reduction'],
+                topk = opt.yoloatss['topk'],
+                area_scale = opt.yoloatss['area_scale'],
+                object_scale = opt.yoloatss['mmdet_obj_scale'],
+                noobject_scale = opt.yoloatss['mmdet_noobj_scale'],
+                loss_iou_weight = opt.yoloatss['loss_iou_weight']
+            )
+        elif self.version == 'yolo-atss-yzf-mmdet':
+            self.head_loss = ATSSHead_yzf(
+                num_classes = self.nc,
+                anchor_generator = np.array(opt.train_cfg['anchors']).reshape(len(opt.train_cfg['anchors']),-1,2).tolist(),
+                featmap_strides = list(det.stride.numpy()), #注意多卡时的写法：model.module
+                add = not opt.yoloatss['loss_mean'],
+                box_loss_type = opt.yoloatss['box_loss_type'],
+                show_pos_bbox = opt.yoloatss['show_pos_bbox'],
+                loss_cls_weight = opt.yoloatss['loss_cls_weight'],
+                loss_conf_weight = opt.yoloatss['loss_conf_weight'],
+                loss_xy_weight = opt.yoloatss['loss_xy_weight'],
+                loss_wh_weight = opt.yoloatss['loss_wh_weight'],
+                loss_reduction = opt.yoloatss['loss_reduction'],
+                topk = opt.yoloatss['topk'],
+                area_scale = opt.yoloatss['area_scale'],
+                object_scale = opt.yoloatss['mmdet_obj_scale'],
+                noobject_scale = opt.yoloatss['mmdet_noobj_scale'],
+                loss_iou_weight = opt.yoloatss['loss_iou_weight']
+            ) 
+        elif self.version == 'yolo-fcos-mmdet':
+            self.head_loss = FCOSHead(
+                num_classes = self.nc,
+                anchor_generator = np.array(opt.train_cfg['anchors']).reshape(len(opt.train_cfg['anchors']),-1,2).tolist(),
+                featmap_strides = list(det.stride.numpy()), #注意多卡时的写法：model.module
+                add = not opt.yolofcos['loss_mean'],
+                box_loss_type = opt.yolofcos['box_loss_type'],
+                show_pos_bbox = opt.yolofcos['show_pos_bbox'],
+                loss_cls_weight = opt.yolofcos['loss_cls_weight'],
+                loss_conf_weight = opt.yolofcos['loss_conf_weight'],
+                loss_reduction = opt.yolofcos['loss_reduction'],
+                area_scale = opt.yolofcos['area_scale'],
+                object_scale = opt.yolofcos['mmdet_obj_scale'],
+                noobject_scale = opt.yolofcos['mmdet_noobj_scale'],
+                loss_iou_weight = opt.yolofcos['loss_iou_weight'],
+                regress_ranges = opt.yolofcos['regress_ranges'],
+                center_sampling = opt.yolofcos['center_sampling'],
+                center_sample_radius = opt.yolofcos['center_sample_radius'],
+                norm_on_bbox = opt.yolofcos['norm_on_bbox'],
+                centerness_on_reg = opt.yolofcos['centerness_on_reg'],
+            ) 
+        elif self.version == 'yolo-center-mmdet':
+            self.head_loss = CenterNetHead(
+                num_classes = self.nc,
+                featmap_strides = list(det.stride.numpy()), #注意多卡时的写法：model.module
+                loss_weight_heatmap= opt.yolocenter['loss_weight_heatmap'],
+                loss_wh_weight= opt.yolocenter['loss_weight_heatmap'],
+                loss_offset_weight= opt.yolocenter['loss_weight_heatmap'],
+                show_pos_bbox=opt.yolocenter['show_pos_bbox']
+            )
+        elif self.version == 'yolo-gfl-mmdet':
+            if self.distiller:
+                self.head_loss = LDHead(
+                    num_classes = self.nc,
+                    anchor_generator = np.array(opt.train_cfg['anchors']).reshape(len(opt.train_cfg['anchors']),-1,2).tolist(),
+                    featmap_strides = list(det.stride.numpy()), #注意多卡时的写法：model.module
+                    add = not opt.yologfl['loss_mean'],
+                    box_loss_type=opt.yologfl['box_loss_type'],
+                    show_pos_bbox=opt.yologfl['show_pos_bbox'],
+                    loss_cls_weight=opt.yologfl['loss_cls_weight'],
+                    loss_dfl_weight=opt.yologfl['loss_dfl_weight'],
+                    loss_iou_weight=opt.yologfl['loss_iou_weight'],
+                    loss_reduction=opt.yologfl['loss_reduction'],
+                    topk=opt.yologfl['topk'],
+                    reg_max=opt.yologfl['reg_max'],
+                    reg_topk=opt.yologfl['reg_topk'],
+                    add_mean=opt.yologfl['add_mean'],
+                    area_scale=opt.yologfl['area_scale'],
+                    object_scale=opt.yologfl['mmdet_obj_scale'],
+                    noobject_scale=opt.yologfl['mmdet_noobj_scale'],
+                    use_sigmoid=opt.yologfl['use_sigmoid'],
+                    **opt.distiller['ld_param']
+                )
+            else:
+                self.head_loss = GFLHead(
+                    num_classes = self.nc,
+                    anchor_generator = np.array(opt.train_cfg['anchors']).reshape(len(opt.train_cfg['anchors']),-1,2).tolist(),
+                    featmap_strides = list(det.stride.numpy()), #注意多卡时的写法：model.module
+                    add = not opt.yologfl['loss_mean'],
+                    box_loss_type=opt.yologfl['box_loss_type'],
+                    show_pos_bbox=opt.yologfl['show_pos_bbox'],
+                    loss_cls_weight=opt.yologfl['loss_cls_weight'],
+                    loss_dfl_weight=opt.yologfl['loss_dfl_weight'],
+                    loss_iou_weight=opt.yologfl['loss_iou_weight'],
+                    loss_reduction=opt.yologfl['loss_reduction'],
+                    topk=opt.yologfl['topk'],
+                    reg_max=opt.yologfl['reg_max'],
+                    reg_topk=opt.yologfl['reg_topk'],
+                    add_mean=opt.yologfl['add_mean'],
+                    area_scale=opt.yologfl['area_scale'],
+                    object_scale=opt.yologfl['mmdet_obj_scale'],
+                    noobject_scale=opt.yologfl['mmdet_noobj_scale'],
+                    use_sigmoid=opt.yologfl['use_sigmoid']
+                )
         else:
             print('not sport')
             raise "error"
 
 
-    def __call__(self, p, targets, img_metas=None):  # predictions, targets, model
+    def __call__(self, p, targets, img_metas=None, imgs=None, feature=None):  # predictions, targets, model
 
         if self.version == 'v5':
             return compute_loss_v5(self,p,targets)
         elif self.version == 'v3':
             return compute_loss_v3(self,p,targets)
+        elif self.version == 'gaussian_v3':
+            return compute_gaussian_yolo_loss(self,p,targets,imgs)
         elif self.version == 'darknet':
             return compute_loss_darknet(self,p,targets)
-        elif self.version == 'mmdet':
+        elif self.version == 'yolo-mmdet':
             return self.head_loss.compute_loss_mmdet(p,targets[0],targets[1],img_metas)#gt_bboxes,gt_labels,
+        elif self.version == 'yolof-mmdet':
+            return self.head_loss.compute_loss_yolof(p,targets[0],targets[1],img_metas)
+        elif self.version == 'yolox-mmdet':
+            return self.head_loss.compute_loss_yolox(p,targets[0],targets[1],img_metas)
+        elif self.version == 'yolox-yzf-mmdet':
+            return self.head_loss.compute_loss_yzf(p,targets[0],targets[1],img_metas)
+        elif self.version == 'yolo-atss-mmdet':
+            return self.head_loss.compute_loss_atss(p,targets[0],targets[1],img_metas)
+        elif self.version == 'yolo-atss-yzf-mmdet':
+            return self.head_loss.compute_loss_atss_yzf(p,targets[0],targets[1],img_metas)
+        elif self.version == 'yolo-fcos-mmdet':
+            return self.head_loss.compute_loss_fcos(p,targets[0],targets[1],img_metas)
+        elif self.version == 'yolo-center-mmdet':
+            return self.head_loss.compute_loss_center(p,targets[0],targets[1],img_metas)
+        elif self.version == 'yolo-gfl-mmdet':
+            if self.distiller:
+                return self.head_loss.compute_loss_gfl(p,targets[0],targets[1],img_metas,feature)
+            else:
+                return self.head_loss.compute_loss_gfl(p,targets[0],targets[1],img_metas)
         else:
             print('erro!')
 

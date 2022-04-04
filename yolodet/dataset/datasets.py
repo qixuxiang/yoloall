@@ -58,22 +58,23 @@ def exif_size(img):
 
 # def create_dataloader(path, imgsz, batch_size, stride, cls_map, single_cls, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
 #                       rank=-1, world_size=1, workers=8, image_weights=False,version='v5'):
-def create_dataloader(path, imgsz, batch_size, stride, opt, augment=False, rank=-1, pad=0.0, rect=False):
+def create_dataloader_yolo(path, imgsz, batch_size, stride, opt, augment=False, rank=-1, pad=0.0, rect=False):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
-        dataset = LoadImagesAndLabels(path, imgsz, batch_size,
+        dataset = LoadImagesAndLabels_YOLO(path, imgsz, batch_size,
                                       augment=augment,  # augment images
                                       hyp=opt.hyp,  # augmentation hyperparameters
                                       rect=opt.train_cfg.get('rect',None),  # rectangular training
                                       cache_images=opt.train_cfg.get('cache_images',None),
                                       cls_map = opt.data['cls_map'],
-                                      single_cls=opt.train_cfg.get('single_cls',False),
-                                      stride=int(stride),
+                                      single_cls=opt.train_cfg.get('single_cls',None),
+                                      stride=stride,
                                       pad=pad,
                                       rank=rank,
                                       image_weights=opt.train_cfg.get('image_weights',None),
                                       version=opt.train_cfg['version'],
-                                      debug = opt.train_cfg['debug'])                                      
+                                      debug = opt.train_cfg['debug'],
+                                      anchors=opt.train_cfg['anchors'])                              
 
     workers=opt.train_cfg['workers']
     image_weights=opt.train_cfg.get('image_weights',None)
@@ -87,7 +88,7 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, augment=False, rank=
                         num_workers=nw,
                         sampler=sampler,
                         pin_memory=True,
-                        collate_fn=LoadImagesAndLabels.collate_fn)
+                        collate_fn=LoadImagesAndLabels_YOLO.collate_fn)
     return dataloader, dataset
 
 
@@ -341,9 +342,9 @@ def img2label_paths(img_paths):
     return [x.replace(sa, sb, 1).replace('.' + x.split('.')[-1], '.txt') for x in img_paths]
 
 
-class LoadImagesAndLabels(Dataset):  # for training/testing
+class LoadImagesAndLabels_YOLO(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
-                 cache_images=False, cls_map = None, single_cls=False, stride=32, pad=0.0, rank=-1,version="v5",debug=False):
+                 cache_images=False, cls_map = None, single_cls=False, stride=32, pad=0.0, rank=-1,version="v5",debug=False,anchors=None):
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
@@ -352,16 +353,18 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
         self.mosaic_border = [-img_size[0] // 2, -img_size[1] // 2] if isinstance(img_size,list) else [-img_size // 2, -img_size // 2]
         self.stride = stride
-        # self.cls_maps = {}
+        self.cls_maps = {}
         self.version = version
         self.debug = debug
-        # if self.debug:
-            
-        # for keys,values in cls_map.items():
-        #     for i in values:
-        #         self.cls_maps[i] = keys
+        self.anchors = np.array(anchors).reshape(-1, 2)
+        if not isinstance(self.stride, int):
+            self.anchor_mask = np.array([i for i in range(self.anchors.shape[0])]).reshape(-1, self.anchors.shape[0] // len(self.stride)).tolist()
 
-        #assert os.path.exists(path)
+        for keys,values in cls_map.items():
+            for i in values:
+                self.cls_maps[i] = keys
+
+        assert os.path.exists(path)
         self.image_path = []
         self.label_path = []
         lines = open(path).read().splitlines()
@@ -369,36 +372,46 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             path_a,path_b = i.split(';')
             self.image_path.append(path_a)
             self.label_path.append(path_b)
+        self.number = len(self.image_path)
 
-        cache_path = Path(path).with_suffix('.cache')  # cached labels
-        if cache_path.is_file():
+
+        #cache_path = Path(path).with_suffix('.cache')  # cached labels
+        cache_path = path + '.cache'
+        logger.info('get cache_path: '+ cache_path + ' # ' + cache_path + '_' + str(self.number))
+        if os.path.isfile(cache_path) and os.path.exists(cache_path):
             cache = torch.load(cache_path)  # load
-            if cache['hash'] != get_hash(self.label_path + self.image_path) or 'results' not in cache:  # changed
-                cache = self.cache_labels(cache_path)  # re-cache
+            # if cache['hash'] != get_hash(self.label_path + self.image_path) or 'results' not in cache:  # changed
+            #     cache = self.cache_labels(cache_path)  # re-cache
+            if cache['name'] != cache_path + '_' + str(self.number):
+                cache = self.cache_labels(cache_path)
+
         else:
             cache = self.cache_labels(cache_path)  # cache
 
         # Display cache
-        [nf, nm, ne, nc, n] = cache.pop('results')  # found, missing, empty, corrupted, total
-        desc = f"Scanning '{cache_path}' for images and labels... {nf} found, {nm} missing, {ne} empty, {nc} corrupted"
-        tqdm(None, desc=desc, total=n, initial=n)
-        assert nf > 0 or not augment, f'No labels found in {cache_path}. Can not train without labels. See {help_url}'
+        if 'results' in cache.keys():
+            [nf, nm, ne, nc, n] = cache.pop('results')  # found, missing, empty, corrupted, total
+            desc = f"Scanning '{cache_path}' for images and labels... {nf} found, {nm} missing, {ne} empty, {nc} corrupted"
+            tqdm(None, desc=desc, total=n, initial=n)
+            assert nf > 0 or not augment, f'No labels found in {cache_path}. Can not train without labels. See {help_url}'
 
         # Read cache
-        cache.pop('hash')  # remove hash
-        labels, shapes = zip(cache.values()) #zip(*cache.values())
+        # if 'hash' in cache.keys():
+        #     cache.pop('hash')  # remove hash
+        #labels, shapes = zip(cache.values()) #zip(*cache.values())
         # for array in labels:
         #     array[:,0] = [self.cat2label[i] for i in array[:,0]]
-
-        self.labels = labels[0]
-        self.shapes = np.array(shapes[0], dtype=np.float64)
+        self.image_path = cache['imgs']
+        self.labels = list(cache['labels'])
+        self.shapes = np.array(cache['shapes'], dtype=np.float64)
+        #self.shapes = np.array(shapes[0], dtype=np.float64)
         #self.img_files = list(cache.keys())  # update
         #self.label_files = img2label_paths(cache.keys())  # update
         if single_cls:
             for x in self.labels:
                 x[:, 0] = 0
 
-        n = len(shapes[0])  # number of images
+        n = len(self.image_path)  # number of images
         bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
         nb = bi[-1] + 1  # number of batches
         self.batch = bi  # batch index of image
@@ -426,8 +439,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     shapes[i] = [maxi, 1]
                 elif mini > 1:
                     shapes[i] = [1, 1 / mini]
-
-            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(np.int) * stride
+            _stride = int(stride) if isinstance(stride,int) else int(max(stride))
+            self.batch_shapes = np.ceil(np.array(shapes) * img_size / _stride + pad).astype(np.int) * _stride
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         self.imgs = [None] * n
@@ -443,10 +456,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
     def cache_labels(self, path=Path('./labels.cache')):
         # Cache dataset labels, check images and read shapes
-        x = {'lable':[],'shape':[]}  # dict
+        x = {'imgs':[],'labels':[],'shapes':[],'name':''}  # dict
         nm,nf,ne,nc = 0,0,0,0
         def worker(pid_num,start,ends):
-            result = {'nm':0, 'nf':0, 'ne':0, 'nc':0,'lable_postion':[],'shape':[]} # number missing, found, empty, duplicate
+            result = {'nm':0, 'nf':0, 'ne':0, 'nc':0,'img_path':[],'lable_postion':[],'shape':[]} # number missing, found, empty, duplicate
             image_paths = self.image_path[start:ends] 
             label_paths = self.label_path[start:ends] 
             pbar = tqdm(zip(image_paths, label_paths), desc='Scanning images', total=len(image_paths))
@@ -467,42 +480,49 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                             assert l.shape[1] == 5, 'labels require 5 columns each'
                             assert (l >= 0).all(), 'negative labels'
                             assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels'
-                            assert np.unique(l, axis=0).shape[0] == l.shape[0], 'duplicate labels'
+                            #assert np.unique(l, axis=0).shape[0] == l.shape[0], 'duplicate labels'
                         else:
                             result['ne'] += 1  # label empty
                             l = np.zeros((0, 5), dtype=np.float32)
                     else:
                         result['nm'] += 1  # label missing
                         l = np.zeros((0, 5), dtype=np.float32)
-                    # result['img_path'].append(im_file)
+                    result['img_path'].append(im_file)
                     result['lable_postion'].append(l)
-                    result['shape'].append(shape)
+                    #result['shape'].append(shape)
                 except Exception as e:
                     result['nc'] += 1
                     print('WARNING: Ignoring corrupted image and/or label %s: %s' % (im_file, e))
 
-                pbar.desc = f"Scanning '{path.parent / path.stem}' for images and labels... " \
+                pbar.desc = f"Scanning '{path}' for images and labels... " \
                             f"{result['nf']} found, {result['nm']} missing, {result['ne']} empty, {result['nc']} corrupted"
             # if nf == 0:
             #     print(f'WARNING: No labels found in {path}. See {help_url}')
             dic[pid_num] = result
 
+
         manager = multiprocessing.Manager()
         dic = manager.dict()
-        num_worker = 2
+        job = []
+        num_worker = 10
         one_pid_nums = len(self.label_path) // num_worker
         #jobs = multiprocessing.Process(target=worker,[])#, args=(dic, i, i*2)
-        job = []
+        
         for pid in range(num_worker):
             if pid == num_worker-1:
                 start = one_pid_nums*pid
                 ends = len(self.label_path)
+                #jobs = multiprocessing.Process(target=worker,args=(pid,start,ends))
+                # job.append(jobs)
+                # jobs.start()
+                # continue
             else:
                 start = one_pid_nums*pid
                 ends = one_pid_nums*(pid+1)
             jobs = multiprocessing.Process(target=worker,args=(pid,start,ends))
             job.append(jobs)
             jobs.start()
+            # jobs.join()
 
         for p in job:
             p.join()
@@ -512,14 +532,84 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             nf += dic[pid]['nf']
             ne += dic[pid]['ne']
             nc += dic[pid]['nc']
-            x['lable'].extend(dic[pid]['lable_postion'])
-            x['shape'].extend(dic[pid]['shape'])
+            x['imgs'].extend(dic[pid]['img_path'])
+            x['labels'].extend(dic[pid]['lable_postion'])
+            #x['shape'].extend(dic[pid]['shape'])
 
-        x['hash'] = get_hash(self.image_path + self.label_path)
-        x['results'] = [nf, nm, ne, nc, len(self.image_path)]
+        #x['hash'] = get_hash(self.image_path + self.label_path)
+        #x['results'] = [nf, nm, ne, nc, len(self.image_path)]
+        x['name'] = path + '_' + str(self.number)
         torch.save(x, path)  # save for next time
-        logging.info(f"New cache created: {path}")
+        logging.info(f"New cache created: {path}:  {x['name']}")
         return x
+
+    def compute_inputs(self, image_group, annotations_group):
+        """
+        Compute inputs for the network using an image_group.
+        """
+
+        # construct an image batch object
+
+        # batch_images = np.zeros((len(image_group), self.img_size[0], self.img_size[1], 3), dtype=np.float32)
+        input_shape = np.array((self.img_size[0], self.img_size[1]), dtype='int32')
+        anchor_mask = self.anchor_mask[::-1]#[[6, 7, 8], [3, 4, 5], [0, 1, 2]] #需要优化
+        grid_shapes = [input_shape // 32, input_shape // 16, input_shape // 8]
+        # (b, fh, fw, num_anchors_per_layer, 5 + num_classes)
+        y_true = [np.zeros(
+            (len(image_group), grid_shapes[l][0], grid_shapes[l][1], len(anchor_mask[0]), 5 + len(set(self.cls_maps.values()))),
+            dtype='float32') for l in range(3)]
+
+        # copy all images to the upper left part of the image batch object
+        for b, (image, annotations) in enumerate(zip(image_group, annotations_group)):
+            # batch_images[b] = image
+            gt_boxes = annotations['bboxes']
+            assert gt_boxes.shape[0] != 0
+            labels = annotations['labels']
+            assert labels.shape[0] != 0
+            boxes_xy = gt_boxes[..., 0:2] #(gt_boxes[..., 0:2] + gt_boxes[..., 2:4]) / 2 #转换为中心点 + wh
+            boxes_wh = gt_boxes[..., 2:4] * input_shape[::-1] #gt_boxes[..., 2:4] - gt_boxes[..., 0:2]
+            #gt_boxes[..., 0:2] = boxes_xy / input_shape[::-1] #归一化
+            #gt_boxes[..., 2:4] = boxes_wh / input_shape[::-1]
+
+            # Expand dim to apply broadcasting.
+            # (1, num_anchors, 2)
+            anchors = np.expand_dims(self.anchors, 0).astype(np.float32)
+            anchor_maxes = anchors / 2.
+            anchor_mins = -anchor_maxes
+
+            # (num_boxes, 2)
+            # Expand dim to apply broadcasting.
+            # (num_boxes, 1, 2)
+            wh = np.expand_dims(boxes_wh, axis=1)
+            box_maxes = wh / 2.
+            box_mins = -box_maxes
+            intersect_mins = np.maximum(box_mins, anchor_mins)
+            intersect_maxes = np.minimum(box_maxes, anchor_maxes)
+            intersect_wh = np.maximum(intersect_maxes - intersect_mins, 0.)
+            # (num_boxes, num_anchors)
+            intersect_area = intersect_wh[..., 0] * intersect_wh[..., 1]
+            # (num_boxes, 1)
+            box_area = wh[..., 0] * wh[..., 1]
+            # (1, num_anchors)
+            anchor_area = anchors[..., 0] * anchors[..., 1]
+            iou = intersect_area / (box_area + anchor_area - intersect_area)
+
+            # Find best anchor for each gt box
+            best_anchor_ids = np.argmax(iou, axis=-1)
+
+            for gt_box_id, best_anchor_id in enumerate(best_anchor_ids):
+                for l in range(3):
+                    if best_anchor_id in anchor_mask[l]:
+                        i = np.floor(gt_boxes[gt_box_id, 0] * grid_shapes[l][1]).astype('int32')
+                        j = np.floor(gt_boxes[gt_box_id, 1] * grid_shapes[l][0]).astype('int32')
+                        k = anchor_mask[l].index(best_anchor_id)
+                        c = labels[gt_box_id]
+                        y_true[l][b, j, i, k, 0:4] = gt_boxes[gt_box_id, 0:4]
+                        y_true[l][b, j, i, k, 4] = 1
+                        y_true[l][b, j, i, k, 5 + int(c)] = 1
+
+        return y_true
+
 
     def __len__(self):
         return len(self.image_path)
@@ -550,18 +640,17 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         else:
             # Load image
             img, (h0, w0), (h, w) = load_image(self, index)
-            img = gaussianblur(img) if random.random() > self.hyp['gaussianblur'] else img
 
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
-            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment) #shape [h,w]
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
             # Load labels
             labels = []
             x = self.labels[index]
             if x.size > 0:
-                # Normalized xywh to pixel xyxy format
+                # Normalized xywh to pixel xyxy format -> padding之后框也要进行相应的平移
                 labels = x.copy()
                 labels[:, 1] = ratio[0] * w * (x[:, 1] - x[:, 3] / 2) + pad[0]  # pad width
                 labels[:, 2] = ratio[1] * h * (x[:, 2] - x[:, 4] / 2) + pad[1]  # pad height
@@ -603,24 +692,14 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 img = np.fliplr(img)
                 if nL:
                     labels[:, 1] = 1 - labels[:, 1]
-
-        if nL and self.version == 'mmdet':
-            labels[:, [2, 4]] *= img.shape[0]  # normalized height 0-1
-            labels[:, [1, 3]] *= img.shape[1]  # normalized width 0-1
-            labels[:, 1:5] = xywh2xyxy(labels[:, 1:5])
             
-        if self.debug :#and rank == 0
-            #pdb.set_trace()
+        if self.debug:
             cv2.namedWindow('Debug',cv2.WINDOW_AUTOSIZE)
             font = cv2.FONT_HERSHEY_SIMPLEX
             debug_img = copy.deepcopy(img)
             for target_num in range(len(labels)):
-                if self.version == 'mmdet':
-                    right_point = (int(labels[target_num,1]),int(labels[target_num,2]))
-                    left_point = (int(labels[target_num,3]),int(labels[target_num,4]))
-                else:
-                    right_point = (int((labels[target_num,1] - labels[target_num,3]/2)*img.shape[1]),int((labels[target_num,2] - labels[target_num,4]/2)*img.shape[0]))
-                    left_point = (int((labels[target_num,1] + labels[target_num,3]/2)*img.shape[1]),int((labels[target_num,2] + labels[target_num,4]/2)*img.shape[0]))
+                right_point = (int((labels[target_num,1] - labels[target_num,3]/2)*img.shape[1]),int((labels[target_num,2] - labels[target_num,4]/2)*img.shape[0]))
+                left_point = (int((labels[target_num,1] + labels[target_num,3]/2)*img.shape[1]),int((labels[target_num,2] + labels[target_num,4]/2)*img.shape[0]))
                 cv2.rectangle(debug_img,right_point,left_point,(255,0,0),3)
                 cv2.putText(debug_img,str(int(labels[target_num,0])),right_point,font, 1.2, (255, 0, 0), 2)
             cv2.imshow('Debug',debug_img)
@@ -631,24 +710,50 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         labels_out = torch.zeros((nL, 6))
         if nL:
             labels_out[:, 1:] = torch.from_numpy(labels)
+            if self.cls_maps:
+                for box in labels_out:
+                    cat = int(box[1])
+                    if cat not in self.cls_maps.keys():
+                        box[1] = -1
+                    else:
+                        box[1] = self.cls_maps[cat]
+                labels_out = labels_out[labels_out[:,1] >= 0]
+        
+        img_meta = {
+            'filename':self.image_path[index],
+            'ori_shape':(h0, w0, 3),
+            'img_shape':(h, w, 3),
+            'pad_shape':img.shape,
+            'scale_factor':(w / w0, h / h0, w / w0, h / h0),
+            'img_norm_cfg':{'mean': np.array([0., 0., 0.], dtype=np.float32), 'std': np.array([255., 255., 255.], dtype=np.float32), 'to_rgb': False}
+        }
+
+        gaussian_yolo_out = None
+        if self.version in ['gaussian_v3']:
+            image_group = [img]
+            annotations_group = [{'bboxes':labels_out[:,2:].numpy(),'labels':labels_out[:,1].numpy()}]
+            gaussian_yolo_out = self.compute_inputs(image_group, annotations_group)
 
         # Convert
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
         img = np.ascontiguousarray(img)
-
-        return torch.from_numpy(img), labels_out, self.image_path[index], shapes
+        return torch.from_numpy(img), labels_out, self.image_path[index], shapes, img_meta, gaussian_yolo_out
 
     @staticmethod
     def collate_fn(batch):
-        img, label, path, shapes = zip(*batch)  # transposed
+        img, label, path, shapes, img_meta, gaussian_yolo_out = zip(*batch)  # transposed 传回来的每个参数是一个集合
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
+        
+        if gaussian_yolo_out != None:
+            return torch.stack(img, 0), [gaussian_yolo_out, img_meta, torch.cat(label, 0)], path, shapes
         return torch.stack(img, 0), torch.cat(label, 0), path, shapes
 
-
-def gaussianblur(img):
-    x = random.choice([(3,3),(5,5),(7,7)])
-    return cv2.GaussianBlur(img, ksize=x, sigmaX=0, sigmaY=0)
+ 
+# 图片模糊 --------------------------------------------------------------------------------------------------
+def augment_gaussianblur(img):
+    ksize = int(random.choice((3, 5, 7)))
+    return cv2.GaussianBlur(img, (ksize, ksize), 0)
 
 
 # Ancillary functions --------------------------------------------------------------------------------------------------
@@ -659,13 +764,16 @@ def load_image(self, index):
         path = self.image_path[index]
         img = cv2.imread(path)  # BGR
         assert img is not None, 'Image Not Found ' + path
+        
+        if self.augment and random.random() < self.hyp['gaussianblur']:
+            img = augment_gaussianblur(img)
+
         h0, w0 = img.shape[:2]  # orig hw
-        if isinstance(self.img_size,list):
-            r = min(self.img_size[0]/h0,self.img_size[1]/w0)
-        else:
-             r = self.img_size / max(h0, w0)  # resize image to img_size
+        #r = self.img_size / max(h0, w0)  # resize image to img_size
+        r = min(1.0 * self.img_size[0] / h0, 1.0 * self.img_size[1] / w0)
         if r != 1:  # always resize down, only resize up if training with augmentation
-            interp = cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR
+            #interp = cv2.INTER_AREA if r < 1 and not self.augment else cv2.INTER_LINEAR #cv2.INTER_AREA对于图像采样更好点
+            interp = cv2.INTER_LINEAR
             img = cv2.resize(img, (int(w0 * r), int(h0 * r)), interpolation=interp)
         return img, (h0, w0), img.shape[:2]  # img, hw_original, hw_resized
     else:
@@ -695,14 +803,13 @@ def load_mosaic(self, index):
     # loads images in a mosaic
 
     labels4 = []
+    sx = self.img_size[1]
+    sy = self.img_size[0]
+    #yc,xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y
     if isinstance(self.img_size,list):
-        sx = self.img_size[1]
-        sy = self.img_size[0]
-
-        yc = int(random.uniform(-self.mosaic_border[0], 2 * sy + self.mosaic_border[0]))
-        xc = int(random.uniform(-self.mosaic_border[1], 2 * sx + self.mosaic_border[1]))  # mosaic center x, y
+        yc = int(random.uniform(-self.mosaic_border[0],2 * sy + self.mosaic_border[0]))
+        xc = int(random.uniform(-self.mosaic_border[1],2 * sx + self.mosaic_border[1])) # mosaic center x, y
         indices = [index] + [self.indices[random.randint(0, self.n - 1)] for _ in range(3)]  # 3 additional image indices
-        
         for i, index in enumerate(indices):
             # Load image
             img, _, (h, w) = load_image(self, index)
@@ -744,8 +851,7 @@ def load_mosaic(self, index):
             np.clip(labels4[:, 3], 0, 2 * sx, out=labels4[:, 3])
             np.clip(labels4[:, 4], 0, 2 * sy, out=labels4[:, 4])
             #np.clip(labels4[:, 1:], 0, 2 * s, out=labels4[:, 1:])  # use with random_perspective
-            #img4, labels4 = replicate(img4, labels4)  # replicate
-
+            # img4, labels4 = replicate(img4, labels4)  # replicate
     else:
         s = self.img_size
         yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y
@@ -788,7 +894,7 @@ def load_mosaic(self, index):
             labels4 = np.concatenate(labels4, 0)
             np.clip(labels4[:, 1:], 0, 2 * s, out=labels4[:, 1:])  # use with random_perspective
             # img4, labels4 = replicate(img4, labels4)  # replicate
-
+            
     # Augment
     img4, labels4 = random_perspective(img4, labels4,
                                        degrees=self.hyp['degrees'],
@@ -818,7 +924,7 @@ def replicate(img, labels):
     return img, labels
 
 
-def letterbox(img, new_shape=(640, 640), color=(127, 127, 127), auto=True, scaleFill=False, scaleup=True):
+def letterbox(img, new_shape=(640, 640), color=(127, 127, 127), auto=True, scaleFill=False, scaleup=True): #color=(114, 114, 114) 填写三通道的均值255/2
     # Resize image to a 32-pixel-multiple rectangle https://github.com/ultralytics/yolov3/issues/232
     shape = img.shape[:2]  # current shape [height, width]
     if isinstance(new_shape, int):
@@ -831,7 +937,7 @@ def letterbox(img, new_shape=(640, 640), color=(127, 127, 127), auto=True, scale
 
     # Compute padding
     ratio = r, r  # width, height ratios
-    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r)) #w,h shape[0] -> h(new_unpad[1]), shape[1] -> w(new_unpad[0])
     dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
     if auto:  # minimum rectangle
         dw, dh = np.mod(dw, 32), np.mod(dh, 32)  # wh padding

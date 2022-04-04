@@ -1,5 +1,7 @@
 project:          imagenet
 data_dir:
+	train:
+	test:
 dataset:          list
 class_map:
 model:            resnet50

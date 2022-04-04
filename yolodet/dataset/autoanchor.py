@@ -2,29 +2,25 @@
 
 import numpy as np
 import torch
+import os
 import yaml
 from scipy.cluster.vq import kmeans
 from tqdm import tqdm
-import os
-import copy
-import random
-import shutil
-# import time
+import logging
 from itertools import repeat
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
 from threading import Thread
 import multiprocessing
-# import cv2
-import numpy as np
-import torch
-from PIL import Image, ExifTags
+from PIL import Image
 from torch.utils.data import Dataset
-from tqdm import tqdm
 
-for orientation in ExifTags.TAGS.keys():
-    if ExifTags.TAGS[orientation] == 'Orientation':
-        break
+
+# Parameters
+help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
+img_formats = ['bmp', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'dng']  # acceptable image suffixes
+vid_formats = ['mov', 'avi', 'mp4', 'mpg', 'mpeg', 'm4v', 'wmv', 'mkv']  # acceptable video suffixes
+logger = logging.getLogger(__name__)
 
 
 def get_hash(files):
@@ -43,13 +39,12 @@ def exif_size(img):
             s = (s[1], s[0])
     except:
         pass
-
     return s
 
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
-                 cache_images=False, cls_map = None, single_cls=False, stride=32, pad=0.0, rank=-1,version="v5",debug=False,kmean_cls=None):
+                 cache_images=False, cls_map = None, single_cls=False, stride=32, pad=0.0, rank=-1,version="v5",debug=False,anchors=None,kmean_cls=None):
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
@@ -58,17 +53,19 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
         self.mosaic_border = [-img_size[0] // 2, -img_size[1] // 2] if isinstance(img_size,list) else [-img_size // 2, -img_size // 2]
         self.stride = stride
-        # self.cls_maps = {}
+        self.cls_maps = {}
         self.version = version
         self.debug = debug
         self.kmean_cls = kmean_cls
-        # if self.debug:
-            
-        # for keys,values in cls_map.items():
-        #     for i in values:
-        #         self.cls_maps[i] = keys
+        self.anchors = np.array(anchors).reshape(-1, 2) if anchors != None else anchors
+        if not isinstance(self.stride, int):
+            self.anchor_mask = np.array([i for i in range(self.anchors.shape[0])]).reshape(-1, self.anchors.shape[0] // len(self.stride)).tolist()
+        if cls_map != None:
+            for keys,values in cls_map.items():
+                for i in values:
+                    self.cls_maps[i] = keys
 
-        #assert os.path.exists(path)
+        assert os.path.exists(path)
         self.image_path = []
         self.label_path = []
         lines = open(path).read().splitlines()
@@ -76,36 +73,45 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             path_a,path_b = i.split(';')
             self.image_path.append(path_a)
             self.label_path.append(path_b)
-
+        self.number = len(self.image_path)
+        
         cache_path = Path(path).with_suffix('.cache')  # cached labels
-        # if cache_path.is_file():
+        cache_path = path + '.cache'
+        #anchor的生成不用保存cache文件
+        # logger.info('get cache_path: '+ cache_path + ' # ' + cache_path + '_' + str(self.number))
+        # if os.path.isfile(cache_path) and os.path.exists(cache_path):
         #     cache = torch.load(cache_path)  # load
-        #     if cache['hash'] != get_hash(self.label_path + self.image_path) or 'results' not in cache:  # changed
-        #         cache = self.cache_labels(cache_path)  # re-cache
+        #     # if cache['hash'] != get_hash(self.label_path + self.image_path) or 'results' not in cache:  # changed
+        #     #     cache = self.cache_labels(cache_path)  # re-cache
+        #     if cache['name'] != cache_path + '_' + str(self.number):
+        #         cache = self.cache_labels(cache_path)
         # else:
         cache = self.cache_labels(cache_path)  # cache
 
         # Display cache
-        [nf, nm, ne, nc, n] = cache.pop('results')  # found, missing, empty, corrupted, total
-        desc = f"Scanning '{cache_path}' for images and labels... {nf} found, {nm} missing, {ne} empty, {nc} corrupted"
-        tqdm(None, desc=desc, total=n, initial=n)
-        assert nf > 0 or not augment, f'No labels found in {cache_path}. Can not train without labels. See {help_url}'
+        if 'results' in cache.keys():
+            [nf, nm, ne, nc, n] = cache.pop('results')  # found, missing, empty, corrupted, total
+            desc = f"Scanning '{cache_path}' for images and labels... {nf} found, {nm} missing, {ne} empty, {nc} corrupted"
+            tqdm(None, desc=desc, total=n, initial=n)
+            assert nf > 0 or not augment, f'No labels found in {cache_path}. Can not train without labels. See {help_url}'
 
         # Read cache
-        cache.pop('hash')  # remove hash
-        labels, shapes = zip(cache.values()) #zip(*cache.values())
+        # if 'hash' in cache.keys():
+        #     cache.pop('hash')  # remove hash
+        #labels, shapes = zip(cache.values()) #zip(*cache.values())
         # for array in labels:
         #     array[:,0] = [self.cat2label[i] for i in array[:,0]]
-
-        self.labels = labels[0]
-        self.shapes = np.array(shapes[0], dtype=np.float64)
+        self.image_path = cache['imgs']
+        self.labels = list(cache['labels'])
+        self.shapes = np.array(cache['shapes'], dtype=np.float64)
+        #self.shapes = np.array(shapes[0], dtype=np.float64)
         #self.img_files = list(cache.keys())  # update
         #self.label_files = img2label_paths(cache.keys())  # update
         if single_cls:
             for x in self.labels:
                 x[:, 0] = 0
 
-        n = len(shapes[0])  # number of images
+        n = len(self.image_path)  # number of images
         bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
         nb = bi[-1] + 1  # number of batches
         self.batch = bi  # batch index of image
@@ -133,8 +139,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     shapes[i] = [maxi, 1]
                 elif mini > 1:
                     shapes[i] = [1, 1 / mini]
-
-            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(np.int) * stride
+            _stride = int(stride) if isinstance(stride,int) else int(max(stride))
+            self.batch_shapes = np.ceil(np.array(shapes) * img_size / _stride + pad).astype(np.int) * _stride
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         self.imgs = [None] * n
@@ -150,10 +156,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
     def cache_labels(self, path=Path('./labels.cache')):
         # Cache dataset labels, check images and read shapes
-        x = {'lable':[],'shape':[]}  # dict
+        x = {'imgs':[],'labels':[],'shapes':[],'name':''}  # dict
         nm,nf,ne,nc = 0,0,0,0
         def worker(pid_num,start,ends):
-            result = {'nm':0, 'nf':0, 'ne':0, 'nc':0,'lable_postion':[],'shape':[]} # number missing, found, empty, duplicate
+            result = {'nm':0, 'nf':0, 'ne':0, 'nc':0,'img_path':[],'lable_postion':[],'shape':[]} # number missing, found, empty, duplicate
             image_paths = self.image_path[start:ends] 
             label_paths = self.label_path[start:ends] 
             pbar = tqdm(zip(image_paths, label_paths), desc='Scanning images', total=len(image_paths))
@@ -174,16 +180,16 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                             assert l.shape[1] == 5, 'labels require 5 columns each'
                             assert (l >= 0).all(), 'negative labels'
                             assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels'
-                            assert np.unique(l, axis=0).shape[0] == l.shape[0], 'duplicate labels'
                             if self.kmean_cls != None and len(self.kmean_cls) > 0:
-                                l = l[[int(class_type) in self.kmean_cls for class_type in l[:,0]]]
+                                l = l[[int(i) in self.kmean_cls for i in l[:,0]]]
+                            #assert np.unique(l, axis=0).shape[0] == l.shape[0], 'duplicate labels'
                         else:
                             result['ne'] += 1  # label empty
                             l = np.zeros((0, 5), dtype=np.float32)
                     else:
                         result['nm'] += 1  # label missing
                         l = np.zeros((0, 5), dtype=np.float32)
-                    # result['img_path'].append(im_file)
+                    result['img_path'].append(im_file)
                     result['lable_postion'].append(l)
                     result['shape'].append(shape)
                 except Exception as e:
@@ -191,27 +197,34 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     print('WARNING: Ignoring corrupted image and/or label %s: %s' % (im_file, e))
 
                 pbar.desc = f"{result['nf']} found, {result['nm']} missing, {result['ne']} empty, {result['nc']} corrupted"
+                #f"Scanning '{path}' for images and labels... " \
             # if nf == 0:
             #     print(f'WARNING: No labels found in {path}. See {help_url}')
             dic[pid_num] = result
 
+
         manager = multiprocessing.Manager()
         dic = manager.dict()
-        num_worker = 1
-        print(f"Use {num_worker} process loading data...")
+        job = []
+        num_worker = 10
         one_pid_nums = len(self.label_path) // num_worker
         #jobs = multiprocessing.Process(target=worker,[])#, args=(dic, i, i*2)
-        job = []
+        print(f'Use {num_worker} process loadind data ...')
         for pid in range(num_worker):
             if pid == num_worker-1:
                 start = one_pid_nums*pid
                 ends = len(self.label_path)
+                #jobs = multiprocessing.Process(target=worker,args=(pid,start,ends))
+                # job.append(jobs)
+                # jobs.start()
+                # continue
             else:
                 start = one_pid_nums*pid
                 ends = one_pid_nums*(pid+1)
             jobs = multiprocessing.Process(target=worker,args=(pid,start,ends))
             job.append(jobs)
             jobs.start()
+            # jobs.join()
 
         for p in job:
             p.join()
@@ -221,13 +234,16 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             nf += dic[pid]['nf']
             ne += dic[pid]['ne']
             nc += dic[pid]['nc']
-            x['lable'].extend(dic[pid]['lable_postion'])
-            x['shape'].extend(dic[pid]['shape'])
+            x['imgs'].extend(dic[pid]['img_path'])
+            x['labels'].extend(dic[pid]['lable_postion'])
+            x['shapes'].extend(dic[pid]['shape'])
 
-        x['hash'] = get_hash(self.image_path + self.label_path)
-        x['results'] = [nf, nm, ne, nc, len(self.image_path)]
-        #torch.save(x, path)  # save for next time
-        print(f"New cache created: {path}")
+        #x['hash'] = get_hash(self.image_path + self.label_path)
+        #x['results'] = [nf, nm, ne, nc, len(self.image_path)]
+        x['name'] = path + '_' + str(self.number)
+        #torch.save(x, path)  # 不用保存cash文件
+        #print(f"New cache created: {path}:  {x['name']}")
+        print('load over!')
         return x
 
 
@@ -323,18 +339,21 @@ def kmean_anchors(path='./data/coco128.yaml', n=9, img_size=640, thr=4.0, gen=10
     #     dataset = LoadImagesAndLabels(data_dict['train'], augment=True, rect=True)
     # else:
     #     dataset = path  # dataset
-    dataset = LoadImagesAndLabels(path, augment=False, rect=False, kmean_cls=kmean_cls)
+
+    assert os.path.exists(path), 'path error!'
+    dataset = LoadImagesAndLabels(path, augment=False, rect=False, kmean_cls = kmean_cls)#rect原来为True
+
 
     # Get label wh
     shapes = img_size * dataset.shapes / dataset.shapes.max(1, keepdims=True)
     wh0 = np.concatenate([l[:, 3:5] * s for s, l in zip(shapes, dataset.labels)])  # wh
 
     # Filter
-    i = (wh0 < 3.0).any(1).sum()
+    i = (wh0 < 5.0).any(1).sum()
     if i:
         print('WARNING: Extremely small objects found. '
               '%g of %g labels are < 3 pixels in width or height.' % (i, len(wh0)))
-    wh = wh0[(wh0 >= 2.0).any(1)]  # filter > 2 pixels
+    wh = wh0[(wh0 >= 5.0).any(1)]  # filter > 2 pixels
 
     # Kmeans calculation
     print('Running kmeans for %g anchors on %g points...' % (n, len(wh)))
@@ -377,6 +396,6 @@ def kmean_anchors(path='./data/coco128.yaml', n=9, img_size=640, thr=4.0, gen=10
 
 
 if __name__ == "__main__":
-    data_path = "/home/yu/data/dataset/coco/val_label.txt"
-    kmean_cls = [0,1,2,3,4,5,6,7,8,9,10]
-    kmean_anchors(path=data_path, n=9, img_size=[640,640], thr=4.0, gen=1000, verbose=True, kmean_cls=kmean_cls)
+    path = '/home/yu/data/dataset/coco/total.txt'
+    kmean_cls = [0, 1, 2, 3, 14, 35]
+    kmean_anchors(path=path, n=15, img_size=[960, 576], thr=4.0, gen=1000, verbose=True, kmean_cls=kmean_cls)

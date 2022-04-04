@@ -8,7 +8,7 @@ class_map:
     multiple_diseases:  1
     rust:               2 
     scab:               3
-model:            res_net
+model:            res_net #mobilenet
 model_cfg:
     layer_num:    18
 resume:

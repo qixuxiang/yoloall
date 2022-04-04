@@ -1,9 +1,9 @@
 import os
-
+import logging
 import numpy as np
+logger = logging.getLogger(__name__)
 
-
-def parse_model_cfg(path):
+def parse_model_cfg(path, out_ch):
     # Parse the yolo *.cfg file and return module definitions path may be 'cfg/yolov3.cfg', 'yolov3.cfg', or 'yolov3'
     if not path.endswith('.cfg'):  # add .cfg suffix if omitted
         path += '.cfg'
@@ -36,6 +36,13 @@ def parse_model_cfg(path):
                     mdefs[-1][key] = int(val) if (int(val) - float(val)) == 0 else float(val)
                 else:
                     mdefs[-1][key] = val  # return string
+
+        if mdefs[-1]['type'] == 'yolo':
+            mdf = mdefs[-2]
+            assert mdf['type'] == 'convolutional', 'yolo input is not convolutional'
+            if mdf['filters'] != out_ch:
+                mdf['filters'] = out_ch
+                logger.warning('!!! filters of yolo input convolutional is not eq than out_ch')
 
     # Check all fields are supported
     supported = ['type', 'batch_normalize', 'filters', 'size', 'stride', 'pad', 'activation', 'layers', 'groups',

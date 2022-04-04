@@ -4,14 +4,13 @@ import math
 import os
 import random
 import time
-import yaml
 from pathlib import Path
 from threading import Thread
 from warnings import warn
 
 import numpy as np
 import torch.distributed as dist
-import torch.nn as nn
+import torch.nn as nn 
 import torch.nn.functional as F
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
@@ -19,34 +18,42 @@ import torch.utils.data
 import yaml
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
-#from config.data import *
+# from config.data import *
 from yolodet.utils.general import increment_path,set_logging
 from yolodet.utils.torch_utils import select_device
 from yolodet.api.train import train
+from yolodet.api.train_two_stage import train_two_stage
+from yolodet.api.train_transformer import train_transformer
+from yolodet.api.train_distiller import train_distiller
+from yolodet.api.train_multi_head import train_multi_head
 logger = logging.getLogger(__name__)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config','-c', type=str, default='config/base.yaml', help='config file path')
+    parser.add_argument('--config','-c', type=str, default='configs/objectdet/test_multi_head.yaml', help='config file path')
     parser.add_argument('--local_rank', type=int, default=-1, help='DDP parameter, do not modify')
-    parser_,remian = parser.parse_known_args()
+    #opt = parser.parse_args()
+    parser_, remaining = parser.parse_known_args()
 
-    with open(parser_.config,'r')as f:
-        cfg = yaml.safe_load(f)
-        parser.set_defaults(**cfg)
-
+    if parser_.config:
+        with open(parser_.config,'r') as f:
+            cfg = yaml.safe_load(f)
+            parser.set_defaults(**cfg)
+    
     opt = parser.parse_args()
     assert opt.config, f"config is null"
+
     if 'name_conf_cls_map' in opt.data:
         nc = opt.data['nc']
         name_conf_cls_map = opt.data['name_conf_cls_map']
         assert len(name_conf_cls_map) == nc, "name_conf_cls_map is wrong"
         opt.data['names'] = [name_conf_cls_map[i][0] for i in range(nc)]
         opt.data['conf_thres'] = [name_conf_cls_map[i][1] for i in range(nc)]
-        opt.data['cls_map'] = [name_conf_cls_map[i][2] for i in range(nc)]
-        
+        opt.data['cls_map'] = {i:name_conf_cls_map[i][2] for i in range(nc)}
 
+
+    #.py文件的解析
     # assert os.path.exists(opt.config),"{opt.config} config file not exist!"
     # temp = opt.config.replace('/','.').split('.py')[0]
     # exec("from {} import train_cfg".format(temp))
@@ -55,17 +62,50 @@ if __name__ == '__main__':
     # opt.hyp = hyp
     # opt.data = eval(train_cfg["data"])
 
-    gpu_num = torch.cuda.device_count()
     # Set DDP variables
-    opt.total_batch_size = opt.train_cfg['batch_size'] * gpu_num
+    opt.local_rank = parser_.local_rank
     opt.world_size = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
     opt.global_rank = int(os.environ['RANK']) if 'RANK' in os.environ else -1
-    opt.local_rank = parser_.local_rank
     set_logging(opt.global_rank)
 
-    # DDP mode
-    device = select_device(opt.device, batch_size=opt.train_cfg['batch_size'])
+    gpu_num = int(os.environ['GPU_NUM']) if 'GPU_NUM' in os.environ else 1
+    opt.batch_size = int(opt.train_cfg['batch_size']) #int(eval(opt.train_cfg['batch_size']))
+    opt.total_batch_size = opt.batch_size * gpu_num
 
+    save_dir = ''
+    if 'JinnTrainResult' in os.environ:
+        if 'jinn_path' in os.environ['JinnTrainResult']:
+            save_dir = os.environ['JinnTrainResult']
+    #切换不同的训练模式
+    two_stage_enabel = opt.two_stage.get('two_stage_enabel',0)
+    transformer_enable = opt.transformer.get('transformer_enabl',0)
+    distill_enable  = opt.distiller.get('distill_enable',0)
+    multi_head_enable = opt.multi_head.get('multi_head_enable',0)
+
+    if distill_enable:
+        save_dir = os.path.join(save_dir,'runs_det',os.path.splitext(os.path.basename(opt.config))[0], opt.train_cfg['project'] + "_" + os.path.splitext(opt.train_cfg['teacher_model'])[0] + '_' + os.path.splitext(opt.train_cfg['student_model'])[0] + '_' + opt.train_cfg['version'] + '_' + opt.train_cfg['name'])
+    else:
+        save_dir = os.path.join(save_dir,'runs_det',os.path.splitext(os.path.basename(opt.config))[0], opt.train_cfg['project'] + "_" + os.path.splitext(opt.train_cfg['model'])[0] + '_' + opt.train_cfg['version'] + '_' + opt.train_cfg['name'])
+    save_dir = increment_path(Path(save_dir),exist_ok=0)  # increment run
+    #save_dir = os.path.join(save_dir, 'runs_det', os.path.splitext(os.path.basename(args.cfg))[0], args.base['project'] + '_' + os.path.splitext(args.base['model'])[0] + '_' + args.base['loss_type'] + '_' + args.base['name'])
+    #save_dir = increment_path(Path(save_dir), exist_ok=0)
+    opt.save_dir = save_dir
+    logger.info(f'save_dir {opt.save_dir}\n')
+
+    # DDP mode
+    device = select_device(opt.device, batch_size=opt.total_batch_size)
+
+    if opt.local_rank != -1:
+        assert torch.cuda.device_count() > opt.local_rank
+        torch.cuda.set_device(opt.local_rank)
+        device = torch.device('cuda', opt.local_rank)
+        dist.init_process_group(backend='nccl', init_method='env://')  # distributed backend
+        assert opt.total_batch_size % opt.world_size == 0, '--batch-size must be multiple of CUDA device count'
+    else:
+        opt.batch_size = opt.total_batch_size
+
+    opt.img_size = [opt.train_cfg['height'],opt.train_cfg['width']]
+    opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
     # # Resume
     # if opt.train_cfg['resume']:  # resume an interrupted run
     #     ckpt = opt.train_cfg['resume'] if isinstance(opt.train_cfg['resume'], str) else get_latest_run()  # specified or most recent path
@@ -77,39 +117,40 @@ if __name__ == '__main__':
     # else:
     #     # opt.hyp = opt.hyp or ('hyp.finetune.yaml' if opt.weights else 'hyp.scratch.yaml')
     #     #opt.data, opt.cfg, opt.hyp = check_file(opt.data), check_file(opt.cfg), check_file(opt.hyp)  # check files
-    #     assert len(opt.train_cfg['cfg']) or len(opt.train_cfg['weights']), 'either --cfg or --weights must be specified'
-    opt.img_size = [opt.train_cfg['height'],opt.train_cfg['width']]
-    opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
-    # opt.name = 'evolve' if opt.train_cfg['evolve'] else opt.train_cfg['name']
-    # opt.save_dir = increment_path(Path(opt.train_cfg['project']) / opt.train_cfg['name'], exist_ok=opt.train_cfg['exist_ok'] | opt.train_cfg['evolve'])  # increment run
+    #     assert len(opt.train_cfg['config']) or len(opt.train_cfg['weights']), 'either --cfg or --weights must be specified'
+    #     opt.img_size = [opt.train_cfg['hight'],opt.train_cfg['width']]
+    #     opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
+    #     opt.name = 'evolve' if opt.train_cfg['evolve'] else opt.train_cfg['name']
+        #opt.save_dir = increment_path(Path(opt.train_cfg['project']) / opt.train_cfg['name'], exist_ok=opt.train_cfg['exist_ok'] | opt.train_cfg['evolve'])  # increment run
 
-    save_dir = ''
-    save_dir = os.path.join(save_dir,'run_det',opt.train_cfg['project'] + '_' + os.path.splitext(opt.train_cfg['model'])[0]+'_' + opt.train_cfg['version'] + '/'+opt.train_cfg['name'])
-    opt.save_dir = increment_path(save_dir)
-
-
-    if opt.local_rank != -1:
-        assert torch.cuda.device_count() > opt.local_rank
-        torch.cuda.set_device(opt.local_rank)
-        device = torch.device('cuda', opt.local_rank)
-        dist.init_process_group(backend='nccl', init_method='env://')  # distributed backend
-        assert opt.batch_size % opt.train_cfg['world_size'] == 0, '--batch-size must be multiple of CUDA device count'
-        opt.batch_size = opt.total_batch_size // opt.train_cfg['world_size']
-    else:
-        opt.batch_size = opt.total_batch_size
 
     # Train
     #logger.info(opt)
     if not opt.train_cfg['evolve']:
         tb_writer = None  # init loggers
         if opt.global_rank in [-1, 0]:
-            #prefix = colors8tr('tensorboard: ')
-            logger.info(f"Start with 'tensorboard --logdir {opt.train_cfg['project']}', view at http://localhost:6006/")
-            #logger.info(f'Start Tensorboard with "tensorboard --logdir {opt.train_cfg['project']}", view at http://localhost:6006/')
-            tb_writer = SummaryWriter(opt.save_dir)  # Tensorboard
-        train(opt, device, tb_writer)
+            if 'JinnTrainLog' in os.environ and 'dataSets' in os.environ:
+                jinn_log = os.path.dirname(os.environ['dataSets']) + '/logs/'
+                logger.info(f'jinn_log: {jinn_log}')
+                os.makedirs(jinn_log, exist_ok=True)
+                tb_writer = SummaryWriter(log_dir=jinn_log)   # jinn
+                logger.info(f'Start Tensorboard with \"tensorboard --logdir {jinn_log}\", view at http://localhost:6006/')
+            else:
+                tb_writer = SummaryWriter(opt.save_dir)  # Tensorboard
+                logger.info(f'Start Tensorboard with \"tensorboard --logdir {opt.save_dir}\", view at http://localhost:6006/')
+        if two_stage_enabel:
+            train_two_stage(opt, device, tb_writer)
+        elif transformer_enable:
+            train_transformer(opt, device, tb_writer)
+        elif multi_head_enable:
+            train_multi_head(opt, device, tb_writer)
+        elif distill_enable:
+            train_distiller(opt, device, tb_writer)
+        else:
+            train(opt, device, tb_writer)
+            
 
-    # Evolve hyperparameters (optional)
+    # # Evolve hyperparameters (optional)
     # else:
     #     # Hyperparameter evolution metadata (mutation scale 0-1, lower_limit, upper_limit)
     #     meta = {'lr0': (1, 1e-5, 1e-1),  # initial learning rate (SGD=1E-2, Adam=1E-3)
@@ -189,4 +230,4 @@ if __name__ == '__main__':
     #     # Plot results
     #     plot_evolution(yaml_file)
     #     print(f'Hyperparameter evolution complete. Best results saved as: {yaml_file}\n'
-    #           f'Command to train a new model with these hyperparameters: $ python train.py --hyp {yaml_file}')
+    #           f'Command to train a new model with these hyperparameters: $ python train.py --hyp {yaml_file}

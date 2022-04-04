@@ -25,10 +25,11 @@ layer = Layer(xxx)
 trans_log.cnet.add_layer(layer)
 """
 
+
 def trans_net(net,
               input_size,
               ckpt='detect.pth',
-              merage_bn=False,
+              merge_bn=False,
               simple_name=True,
               out_blob_pre='',
               draw=False,
@@ -39,7 +40,7 @@ def trans_net(net,
     trans_log.simple_name = simple_name
     trans_log.out_blob_pre = out_blob_pre
     trans_log.ckpt = ckpt
-    trans_log.merage_bn = merage_bn
+    trans_log.merage_bn = merge_bn
 
     trans_log.init() #only init cnet
 
@@ -81,3 +82,74 @@ def trans_net(net,
 
     return prototxt, caffemodel, output_blobs
 
+
+def trans_nets(nets,
+              input_size,
+              ckpt='detect.pth',
+              merge_bn=False,
+              simple_name=True,
+              out_blob_pre='',
+              draw=False,
+              mmdet=False):
+
+    print('Starting Transform, This will take a while')
+
+    trans_log.__init__() # trans in train must re init
+    trans_log.simple_name = simple_name
+    trans_log.out_blob_pre = out_blob_pre
+    trans_log.ckpt = ckpt
+    trans_log.merge_bn = merge_bn
+
+    # trans_log.init([input_var]) # init input_var and cnet
+    trans_log.init()  # only init cnet
+
+    trans_log.cnet.net.name = ckpt
+    # trans_log.cnet.net.input.extend([trans_log.blobs(input_var)])
+    # trans_log.cnet.net.input_dim.extend(input_var.size())
+
+    trans_log.NET_INITTED = True
+
+    for ni, net in enumerate(nets):
+        net.eval()
+        for name, layer in net.named_modules():
+            trans_log.layer_names[layer] = str(ni)+'_'+name
+        # print("torch ops name:", trans_log.layer_names)
+
+    replace_torch_function()
+    replace_torch_operation()
+    replace_torch_tensor_operation()
+    replace_torchvision_operation()
+    replace_torch_class()
+
+    device = next(nets[0].parameters()).device
+    print(f'trans_net on {device}')
+    
+    if not mmdet:
+        input_var = torch.ones(input_size, device=device)
+    else:
+        input_var = torch.ones(input_size, device=device)
+
+    for ni, net in enumerate(nets):
+        if not mmdet:
+            out = net.forward(input_var)
+        else:
+            out = net.forward_convert_caffe(input_var)
+        print(f'{ni+1} model Transform Completed\n')
+
+    prototxt, caffemode, output_blobs = trans_log.cnet.save()
+
+    if draw:
+        output_image_file = os.path.splitext(prototxt)[0] + '.jpg'
+        draw_caffe_net(input_net_proto_file=prototxt,
+                    output_image_file=output_image_file,
+                    rankdir='LR',
+                    phase=None,
+                    display_lrm=None)
+    
+    reset_torch_function()
+    reset_torch_operation()
+    reset_torch_tensor_operation()
+    reset_torchvision_operation()
+    reset_torch_class()
+    
+    return prototxt, caffemode, output_blobs

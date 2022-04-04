@@ -284,10 +284,3 @@ class ModelEMA:
     def update_attr(self, model, include=(), exclude=('process_group', 'reducer')):
         # Update EMA attributes
         copy_attr(self.ema, model, include, exclude)
-
-
-def time_sync():
-    # pytorch-accurate time
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    return time.time()
